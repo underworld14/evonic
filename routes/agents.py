@@ -223,6 +223,7 @@ def api_create_agent():
         artifacts_enabled = data.get('artifacts_enabled')
         if artifacts_enabled is None or artifacts_enabled:
             _ensure_artifacts_prompt(agent_id, True)
+            db.add_agent_tool(agent_id, 'save_artifact')
         # Create notes.md template if it does not already exist
         _notes_md = os.path.join(_kb_dir(agent_id), 'notes.md')
         if not os.path.isfile(_notes_md):
@@ -258,6 +259,10 @@ def api_update_agent(agent_id):
         new_artifacts = bool(data['artifacts_enabled'])
         if new_artifacts != old_artifacts:
             _ensure_artifacts_prompt(agent_id, new_artifacts)
+            if new_artifacts:
+                db.add_agent_tool(agent_id, 'save_artifact')
+            else:
+                db.remove_agent_tool(agent_id, 'save_artifact')
     db.update_agent(agent_id, data)
     agent = db.get_agent(agent_id)
     agent['system_prompt'] = _read_system_prompt(agent_id, fallback=agent.get('system_prompt', ''))
@@ -504,9 +509,9 @@ _ARTIFACT_PROMPT_TEMPLATE = """
 You have an **Artifacts** feature that allows you to save files you produce during your work. Files are stored in your dedicated artifacts directory and are accessible via the web UI.
 
 Use the **save_artifact** tool to save files:
-- : the name of the file (e.g. 'report.md', 'analysis.txt', 'output.json')
-- : the text content of the file
-- : optional MIME type hint
+- `filename`: the name of the file (e.g. 'report.md', 'analysis.txt', 'output.json')
+- `content`: the text content of the file
+- `mime_type`: optional MIME type hint
 
 When to use this tool:
 - After completing analysis or research, save the findings as a report
@@ -514,7 +519,7 @@ When to use this tool:
 - After creating images, PDFs, or markdown documents
 - Any time you produce a file that the user or other agents may want to reference later
 
-The files are stored under  and can be browsed and downloaded from the agent detail page in the Artifacts tab.
+The files are stored in your dedicated artifacts directory and can be browsed and downloaded from the agent detail page in the Artifacts tab.
 """
 
 

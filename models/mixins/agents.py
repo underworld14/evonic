@@ -167,6 +167,24 @@ class AgentMixin:
             conn.execute("DELETE FROM agent_tools")
             conn.commit()
 
+    def add_agent_tool(self, agent_id: str, tool_id: str):
+        """Add a single tool to an agent (idempotent)."""
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO agent_tools (agent_id, tool_id) VALUES (?, ?)",
+                (agent_id, tool_id)
+            )
+            conn.commit()
+
+    def remove_agent_tool(self, agent_id: str, tool_id: str):
+        """Remove a single tool from an agent."""
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM agent_tools WHERE agent_id = ? AND tool_id = ?",
+                (agent_id, tool_id)
+            )
+            conn.commit()
+
     # ==================== Agent Skills ====================
 
     def get_agent_skills(self, agent_id: str) -> List[str]:
