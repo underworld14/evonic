@@ -68,6 +68,16 @@ def use_test_database(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def isolate_agent_dirs(monkeypatch, tmp_path):
+    """Redirect agent file I/O to tmp_path so tests don't pollute agents/."""
+    agents_tmp = str(tmp_path / 'agents')
+    sub_tmp = str(tmp_path / 'evonic-sub-agents')
+    monkeypatch.setattr('models.chat.AGENTS_DIR', agents_tmp)
+    monkeypatch.setattr('models.chatlog._AGENTS_DIR', agents_tmp)
+    monkeypatch.setattr('models.chat.SUB_AGENTS_TMP_DIR', sub_tmp)
+
+
+@pytest.fixture(autouse=True)
 def ensure_super_agent(use_test_database):
     """Create a super agent in the test DB so Flask API routes pass the setup check."""
     from models.db import db
