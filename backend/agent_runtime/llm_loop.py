@@ -48,12 +48,16 @@ def _persist_agent_state_split(ms, agent_id, session_id, db_agent_id=None):
     raw = ms.serialize()
     data = json.loads(raw)
 
-    # Global: focus/focus_reason
+    # Global: focus/focus_reason — merge with existing state to preserve
+    # extra keys set by other components (e.g. active_fallback_model_id)
+    existing_raw = db.get_agent_state(agent_id)
+    existing = json.loads(existing_raw) if existing_raw else {}
     global_data = {
         'focus': data.get('focus', False),
         'focus_reason': data.get('focus_reason'),
     }
-    db.upsert_agent_state(json.dumps(global_data), agent_id=agent_id)
+    existing.update(global_data)
+    db.upsert_agent_state(json.dumps(existing), agent_id=agent_id)
 
     # Per-session: everything except focus/focus_reason
     session_data = {
@@ -169,30 +173,60 @@ def run_tool_loop(agent: Dict[str, Any],
                     if _tid not in _assigned:
                         _assigned.append(_tid)
 
+    # Helper: build model_config dict from a model DB row
+    def _build_model_config(_model: dict) -> dict:
+        return {
+            'base_url': _model.get('base_url'),
+            'api_key': _model.get('api_key'),
+            'model_name': _model.get('model_name'),
+            'timeout': _model.get('timeout', 60),
+            'thinking': bool(_model.get('thinking', False)),
+            'thinking_budget': _model.get('thinking_budget', 0),
+            'max_tokens': _model.get('max_tokens', 32768),
+            'temperature': _model.get('temperature'),
+            'vision_supported': bool(_model.get('vision_supported', False)),
+        }
+
     # Resolve agent's default model for LLM calls
     agent_model_config = None
-    try:
-        model = db.get_agent_default_model(agent_id)
-        if model:
-            agent_model_config = {
-                'base_url': model.get('base_url'),
-                'api_key': model.get('api_key'),
-                'model_name': model.get('model_name'),
-                'timeout': model.get('timeout', 60),
-                'thinking': bool(model.get('thinking', False)),
-                'thinking_budget': model.get('thinking_budget', 0),
-                'max_tokens': model.get('max_tokens', 32768),
-                'temperature': model.get('temperature'),
-                'vision_supported': bool(model.get('vision_supported', False)),
-            }
-            _logger.info("%s using model: %s (%s)", agent_id, model.get('name'), model.get('model_name'))
-        else:
-            _logger.info("No model configured for agent %s, using config.py defaults", agent_id)
-    except Exception as e:
-        _logger.warning("Failed to resolve model for agent %s: %s", agent_id, e)
+    _active_fallback_model_name = None  # for system message injection
 
-    # Fallback: agent.model is a raw model-name string override (from agent General Settings).
-    # Use it with the global endpoint when no llm_models entry is configured.
+    # Step 1: Check agent_state for persisted fallback model (cross-session)
+    try:
+        _as_raw = db.get_agent_state(agent_id)
+        _as = json.loads(_as_raw) if _as_raw else {}
+        _fb_id = _as.get('active_fallback_model_id')
+        if _fb_id:
+            _fb_model = db.get_model_by_id(_fb_id)
+            if _fb_model and _fb_model.get('enabled', True):
+                agent_model_config = _build_model_config(_fb_model)
+                _active_fallback_model_name = _fb_model.get('name') or _fb_model.get('model_name')
+                _logger.info(
+                    "%s using persisted fallback model: %s (%s) [id=%s]",
+                    agent_id, _fb_model.get('name'), _fb_model.get('model_name'), _fb_id)
+            else:
+                # Fallback model is invalid (deleted/disabled) — clear flag, use default
+                _logger.warning(
+                    "Persisted fallback model %s for agent %s is invalid — clearing",
+                    _fb_id, agent_id)
+                _as.pop('active_fallback_model_id', None)
+                db.upsert_agent_state(json.dumps(_as), agent_id=agent_id)
+    except Exception as e:
+        _logger.warning("Failed to read agent_state for fallback check: %s", e)
+
+    # Step 2: If no fallback from state, resolve normal default model
+    if not agent_model_config:
+        try:
+            model = db.get_agent_default_model(agent_id)
+            if model:
+                agent_model_config = _build_model_config(model)
+                _logger.info("%s using model: %s (%s)", agent_id, model.get('name'), model.get('model_name'))
+            else:
+                _logger.info("No model configured for agent %s, using config.py defaults", agent_id)
+        except Exception as e:
+            _logger.warning("Failed to resolve model for agent %s: %s", agent_id, e)
+
+    # Step 3: Fallback: agent.model string override (from agent General Settings)
     if not agent_model_config and agent.get('model'):
         import config as _config
         try:
@@ -217,6 +251,22 @@ def run_tool_loop(agent: Dict[str, Any],
 
     # Create LLMClient with resolved model config
     llm = LLMClient(model_config=agent_model_config) if agent_model_config else llm_client
+
+    # Step 4: If using fallback from agent_state, inject system message
+    if _active_fallback_model_name:
+        _fb_sys_msg = (
+            f"[System: You are currently using a fallback model \"{_active_fallback_model_name}\". "
+            "If the user asks you to switch back to your primary model, "
+            "call reset_active_model() to reset.]"
+        )
+        messages.append({'role': 'system', 'content': _fb_sys_msg})
+        _logger.info("Injected fallback system message for agent %s", agent_id)
+        event_stream.emit('llm_fallback', {
+            'agent_id': agent_id, 'session_id': session_id,
+            'external_user_id': external_user_id, 'channel_id': channel_id,
+            'fallback_model': _active_fallback_model_name,
+            'restored_from_state': True,
+        })
 
     # If the model doesn't support vision, replace image content with a text instruction
     # so the LLM can inform the user in their own language.
@@ -479,18 +529,28 @@ def run_tool_loop(agent: Dict[str, Any],
             # Auto-retry on transient provider/connection errors (no partial output to preserve)
             if error_type in ('provider_error', 'connection_error') and timeout_retries < max_timeout_retries:
                 timeout_retries += 1
-                wait = min(2 ** timeout_retries, 30)
-                _logger.warning("%s — auto-retry %d/%d in %ds", error_type, timeout_retries, max_timeout_retries, wait)
-                user_msg = f"Model is busy, retrying... ({timeout_retries}/{max_timeout_retries})"
-                event_stream.emit('llm_retry', {
-                    'agent_id': agent_id, 'session_id': session_id,
-                    'external_user_id': external_user_id, 'channel_id': channel_id,
-                    'retry_count': timeout_retries, 'max_retries': max_timeout_retries,
-                    'error_type': error_type,
-                    'user_message': user_msg,
-                })
-                time.sleep(wait)
-                continue
+                _has_fallback = db.get_agent_fallback_model(agent_id) is not None
+                # If a fallback model is configured, only retry once then fall through
+                # to fallback logic (line ~573+). Without fallback: retry as usual.
+                if not _has_fallback or timeout_retries < 1:
+                    wait = min(2 ** timeout_retries, 30)
+                    _logger.warning("%s — auto-retry %d/%d in %ds", error_type, timeout_retries, max_timeout_retries, wait)
+                    user_msg = f"Model is busy, retrying... ({timeout_retries}/{max_timeout_retries})"
+                    event_stream.emit('llm_retry', {
+                        'agent_id': agent_id, 'session_id': session_id,
+                        'external_user_id': external_user_id, 'channel_id': channel_id,
+                        'retry_count': timeout_retries, 'max_retries': max_timeout_retries,
+                        'error_type': error_type,
+                        'user_message': user_msg,
+                    })
+                    time.sleep(wait)
+                    continue
+                else:
+                    # Fallback exists and we've retried once — log and fall through
+                    _logger.warning(
+                        "%s — retry %d/%d, fallback configured — skipping remaining retries",
+                        error_type, timeout_retries, max_timeout_retries,
+                    )
 
             # Auto-retry on timeout: LLM was likely still reasoning
             if error_type in ('request_timeout', 'generation_timeout') and timeout_retries < max_timeout_retries:
@@ -580,18 +640,10 @@ def run_tool_loop(agent: Dict[str, Any],
                     'external_user_id': external_user_id, 'channel_id': channel_id,
                     'primary_error': error_type,
                     'fallback_model': _fallback_model.get('name'),
+                    'restored_from_state': False,
                 })
                 try:
-                    _fallback_config = {
-                        'base_url': _fallback_model.get('base_url'),
-                        'api_key': _fallback_model.get('api_key'),
-                        'model_name': _fallback_model.get('model_name'),
-                        'timeout': _fallback_model.get('timeout', 60),
-                        'thinking': bool(_fallback_model.get('thinking', False)),
-                        'thinking_budget': _fallback_model.get('thinking_budget', 0),
-                        'max_tokens': _fallback_model.get('max_tokens', 32768),
-                        'temperature': _fallback_model.get('temperature'),
-                    }
+                    _fallback_config = _build_model_config(_fallback_model)
                     _fallback_llm = LLMClient(model_config=_fallback_config)
                     with llm_lock:
                         _fallback_result = _fallback_llm.chat_completion(
@@ -614,6 +666,19 @@ def run_tool_loop(agent: Dict[str, Any],
                         llm = _fallback_llm
                         result = _fallback_result
                         _fallback_succeeded = True
+                        # Persist fallback model ID to agent_state (cross-session)
+                        try:
+                            _as_raw = db.get_agent_state(agent_id)
+                            _as = json.loads(_as_raw) if _as_raw else {}
+                            _as['active_fallback_model_id'] = _fallback_model.get('id')
+                            db.upsert_agent_state(json.dumps(_as), agent_id=agent_id)
+                            _logger.info(
+                                "Persisted fallback model %s to agent_state for agent %s",
+                                _fallback_model.get('model_name'), agent_id)
+                        except Exception as _ase:
+                            _logger.warning(
+                                "Failed to persist fallback to agent_state for agent %s: %s",
+                                agent_id, _ase)
                     else:
                         _fb_err = _fallback_result.get('error_type', 'unknown')
                         _logger.error(

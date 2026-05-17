@@ -44,6 +44,8 @@ class ToolRegistry:
         self._builtins['builtin:recall'] = _builtin_recall_factory
         # Session recall tool
         self._builtins['builtin:recall_sessions'] = _builtin_recall_sessions_factory
+        # Tool to clear active fallback flag from agent_state (agent calls this)
+        self._builtins['builtin:reset_active_model'] = _builtin_reset_active_model_factory
 
     def get_tool_defs_from_json(self) -> List[Dict[str, Any]]:
         """Load tool definitions from tools/*.json (for eval & agent config UI)."""
@@ -857,5 +859,56 @@ def _builtin_recall_sessions_factory(agent_context: dict):
             lines.append("")
 
         return {"result": "\n".join(lines)}
+
+    return tool_def, executor
+
+
+def _builtin_reset_active_model_factory(agent_context: dict):
+    """Factory for the built-in 'reset_active_model' tool.
+
+    Clears the active fallback model flag from agent_state so the agent
+    returns to its configured primary/default model on the next turn.
+    """
+    tool_def = {
+        "type": "function",
+        "function": {
+            "name": "reset_active_model",
+            "description": (
+                "Clears the active fallback model flag from agent_state. "
+                "After calling this, the agent will use its configured "
+                "primary/default model on the next turn."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    }
+
+    def executor(arguments: dict) -> dict:
+        agent_id = agent_context.get('id', '')
+        if not agent_id:
+            return {"error": "Agent ID not available in context."}
+        from models.chat import agent_chat_manager
+        import json
+        try:
+            _db = agent_chat_manager.get(agent_id)
+            _raw = _db.get_agent_state()
+            if not _raw:
+                return {"result": "No agent state found — nothing to reset."}
+            _data = json.loads(_raw)
+            if 'active_fallback_model_id' not in _data:
+                return {"result": "No active fallback model to reset."}
+            fb_id = _data.pop('active_fallback_model_id', None)
+            _db.upsert_agent_state(json.dumps(_data))
+            return {
+                "result": (
+                    f"Fallback model ({fb_id}) has been cleared. "
+                    "The agent will use its primary model on the next turn."
+                )
+            }
+        except Exception as e:
+            return {"error": f"Failed to reset active model: {str(e)}"}
 
     return tool_def, executor

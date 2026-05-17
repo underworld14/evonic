@@ -19,6 +19,7 @@ async function renderAgentState(agentId, userId, containerIds, sessionId) {
 
         const empty = '<p class="text-sm text-gray-400 dark:text-gray-500 italic">No state yet.</p>';
         const hasAnyState = data.focus ||
+            data.active_model ||
             (data.states && Object.keys(data.states).length > 0);
         if (!hasAnyState) {
             (Array.isArray(containerIds) ? containerIds : [containerIds]).forEach(id => {
@@ -28,13 +29,23 @@ async function renderAgentState(agentId, userId, containerIds, sessionId) {
             return;
         }
 
-        // Build status cards row (Focus)
+        // Build status cards row (Focus + Model)
         let cards = '';
 
         // Focus badge
         if (data.focus) {
-            const reasonText = data.focus_reason ? ` — ${esc(data.focus_reason)}` : '';
+            const reasonText = data.focus_reason ? ` \u2014 ${esc(data.focus_reason)}` : '';
             cards += `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300 ml-1">Focus${reasonText}</span>`;
+        }
+
+        // Active model badge
+        if (data.active_model) {
+            const am = data.active_model;
+            if (am.is_fallback) {
+                cards += `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300 ml-1" title="Using fallback model due to primary failure">Model: ${esc(am.name)} <span class="ml-1 text-[10px] opacity-75">(fallback)</span></span>`;
+            } else {
+                cards += `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300 ml-1">Model: ${esc(am.name)}</span>`;
+            }
         }
 
         // TODO: Debug feature - dump raw AgentState JSON for verification

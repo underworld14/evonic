@@ -1196,6 +1196,35 @@ def api_chat_agent_state(agent_id):
 
     if merged:
         state = AgentState.deserialize(_json.dumps(merged))
+        # Resolve active model badge
+        active_model = None
+        fb_id = agent_data.get('active_fallback_model_id')
+        if fb_id:
+            fb_model = db.get_model_by_id(fb_id)
+            if fb_model:
+                active_model = {
+                    'name': fb_model.get('name', fb_id),
+                    'model_name': fb_model.get('model_name', fb_id),
+                    'is_fallback': True,
+                    'id': fb_id,
+                }
+            else:
+                active_model = {
+                    'name': fb_id,
+                    'model_name': fb_id,
+                    'is_fallback': True,
+                    'id': fb_id,
+                }
+        else:
+            # Show primary model
+            prim_model = db.get_agent_default_model(agent_id)
+            if prim_model:
+                active_model = {
+                    'name': prim_model.get('name', 'unknown'),
+                    'model_name': prim_model.get('model_name', 'unknown'),
+                    'is_fallback': False,
+                    'id': prim_model.get('id', ''),
+                }
         return jsonify({
             'mode': state.mode,
             'tasks': state.tasks,
@@ -1203,8 +1232,9 @@ def api_chat_agent_state(agent_id):
             'states': state.states,
             'focus': state.focus,
             'focus_reason': state.focus_reason,
+            'active_model': active_model,
         })
-    return jsonify({'mode': None})
+    return jsonify({'mode': None, 'active_model': None})
 
 
 @agents_bp.route('/api/agents/<agent_id>/chat/clear', methods=['POST'])

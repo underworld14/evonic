@@ -323,6 +323,18 @@ def _register_builtins():
             'agent_id': agent_id,
         }))
 
+        # Clear fallback flag from agent_state before restart so the agent
+        # starts with its primary model after reboot
+        try:
+            from models.chat import agent_chat_manager as _restart_cm
+            _restart_raw = _restart_cm.get(agent_id).get_agent_state()
+            if _restart_raw:
+                _restart_data = json.loads(_restart_raw)
+                if _restart_data.pop('active_fallback_model_id', None):
+                    _restart_cm.get(agent_id).upsert_agent_state(json.dumps(_restart_data))
+        except Exception:
+            pass
+
         def _do_restart():
             import time
             import resource
@@ -524,6 +536,25 @@ def _register_builtins():
                 lines.append("Focus: no")
         else:
             lines.append("Focus: no")
+
+        # Active model badge: check if fallback is active
+        if state_content:
+            try:
+                _state_data = json.loads(state_content) if isinstance(state_content, str) else state_content
+                _fb_active_id = _state_data.get('active_fallback_model_id')
+                if _fb_active_id:
+                    _active_m = db.get_model_by_id(_fb_active_id)
+                    if _active_m:
+                        _am_name = _active_m.get('name', _fb_active_id)
+                        lines.append(f"Active Model: {_am_name} (fallback)")
+                    else:
+                        lines.append(f"Active Model: {_fb_active_id} (fallback, unknown)")
+                else:
+                    # Show primary
+                    _prim_name = model.get('name', model.get('model_name', 'unknown')) if model else (agent.get('model', 'unknown'))
+                    lines.append(f"Active Model: {_prim_name} (primary)")
+            except Exception:
+                pass
 
         # Workplace
         workplace_id = agent.get("workplace_id")
