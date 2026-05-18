@@ -16,6 +16,10 @@ Usage:
 import re
 import time
 
+# Marker placed at the top of generated wrapper scripts so the guard
+# recognises them and does not reject them a second time.
+BYPASS_MARKER = "# EVONIC_LR_BYPASS"
+
 
 # ============================================================================
 # Long-Running Command Patterns
@@ -79,6 +83,10 @@ def check_long_running(script: str) -> dict | None:
     with the matched command info and tmux/screen wrapper scripts for background
     execution with logging.
     """
+    # Skip if script is already a generated wrapper (contains bypass marker)
+    if script.lstrip().startswith(BYPASS_MARKER):
+        return None
+
     matched = _detect_long_running(script)
     if not matched:
         return None
@@ -130,6 +138,7 @@ def _build_wrapper_script(
     escaped = original_script.replace("'", "'\\''")
 
     return f"""\
+{BYPASS_MARKER}
 LOG_FILE="{log_file}"
 SESS="{session_name}"
 SCRIPT_CMD='{{ {escaped}; }}; EC=$?; echo ""; echo "EXIT_CODE=$EC"'
@@ -242,6 +251,20 @@ def _self_test():
     assert "check_exit_code_script" in r
     passed += 1
     print(f"Test 12 PASSED: status/exit_code scripts present")
+
+    # Test 13: Bypass marker — wrapper script not re-flagged
+    r = check_long_running("make -j4")
+    assert r is not None
+    r2 = check_long_running(r["run_script"])
+    assert r2 is None, "Wrapper script should bypass guard"
+    passed += 1
+    print(f"Test 13 PASSED: wrapper script bypasses guard")
+
+    # Test 14: Bypass marker with leading whitespace
+    r3 = check_long_running(f"  {BYPASS_MARKER}\nmake -j4")
+    assert r3 is None, "Bypass marker with leading space should still work"
+    passed += 1
+    print(f"Test 14 PASSED: bypass marker with whitespace")
 
     print(f"\nAll {passed} tests passed!")
 

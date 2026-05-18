@@ -9,7 +9,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, '/workspace')
 
-from backend.tools.lib.long_running_guard import check_long_running, _detect_long_running
+from backend.tools.lib.long_running_guard import check_long_running, _detect_long_running, BYPASS_MARKER
 
 
 # ============================================================================
@@ -303,3 +303,34 @@ class TestBashIntegration:
         agent = {'session_id': 'test-lr-super', 'is_super': True}
         r = execute(agent, {'script': 'cmake -B build'})
         assert r.get('level') == 'long_running'
+
+
+# ============================================================================
+# Bypass tests — wrapper script must not be re-flagged
+# ============================================================================
+
+class TestBypassMarker:
+
+    def test_wrapper_script_not_reflagged(self):
+        """Agent runs the suggested run_script — guard must not block it again."""
+        r = check_long_running("make -j4")
+        assert r is not None
+        r2 = check_long_running(r['run_script'])
+        assert r2 is None, "Wrapper script should bypass guard"
+
+    def test_bypass_marker_with_leading_whitespace(self):
+        script = f"  {BYPASS_MARKER}\nmake -j4"
+        assert check_long_running(script) is None
+
+    def test_bypass_marker_exact(self):
+        script = f"{BYPASS_MARKER}\nmake -j4"
+        assert check_long_running(script) is None
+
+    def test_no_bypass_without_marker(self):
+        """A script without the marker should still be flagged."""
+        assert check_long_running("make -j4") is not None
+
+    def test_wrapper_contains_bypass_marker(self):
+        """Generated run_script must start with the bypass marker."""
+        r = check_long_running("cmake -B build")
+        assert r['run_script'].startswith(BYPASS_MARKER)
