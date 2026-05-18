@@ -7,9 +7,6 @@ including insertion-only hunks with no surrounding context.
 
 import os
 import re
-import shutil
-import subprocess
-import tempfile
 
 try:
     from config import SANDBOX_WORKSPACE as _WORKSPACE_ROOT
@@ -126,8 +123,10 @@ def _find_hunk_pos(lines: list, hunk_lines: list, stated_pos: int,
     For insertion-only hunks (no context or removal lines) the stated position
     is trusted directly — no search is needed.
 
-    For hunks with context/removal lines, searches outward from `stated_pos`
-    within ±SEARCH_WINDOW lines, comparing after stripping trailing whitespace.
+    For hunks with context/removal lines, uses tiered matching:
+      1. Exact match (trailing whitespace stripped) within ±SEARCH_WINDOW
+      2. Indent-tolerant match (all whitespace stripped) within ±SEARCH_WINDOW
+      3. Indent-tolerant match across the entire file
 
     `lines` may contain line endings or bare strings — both are handled.
 
@@ -140,18 +139,47 @@ def _find_hunk_pos(lines: list, hunk_lines: list, stated_pos: int,
         pos = max(0, min(stated_pos, len(lines)))
         return (pos, None)
 
+    match_len = len(to_match)
     window = SEARCH_WINDOW if fuzzy else 0
 
+    # --- Tier 1: exact match (trailing whitespace stripped), ±window ---
     for delta in range(window + 1):
         for sign in ([0] if delta == 0 else [1, -1]):
             pos = stated_pos + sign * delta
-            if pos < 0 or pos + len(to_match) > len(lines):
+            if pos < 0 or pos + match_len > len(lines):
                 continue
             if all(
                 lines[pos + i].rstrip('\r\n').rstrip() == to_match[i][1].rstrip()
-                for i in range(len(to_match))
+                for i in range(match_len)
             ):
                 return (pos, None)
+
+    if not fuzzy:
+        return (-1, None)
+
+    # Pre-compute stripped versions for tier 2 and 3.
+    match_stripped = [txt.strip() for _, txt in to_match]
+    lines_stripped = [l.rstrip('\r\n').strip() for l in lines]
+
+    # --- Tier 2: indent-tolerant match, ±window ---
+    for delta in range(window + 1):
+        for sign in ([0] if delta == 0 else [1, -1]):
+            pos = stated_pos + sign * delta
+            if pos < 0 or pos + match_len > len(lines_stripped):
+                continue
+            if all(
+                lines_stripped[pos + i] == match_stripped[i]
+                for i in range(match_len)
+            ):
+                return (pos, None)
+
+    # --- Tier 3: indent-tolerant match, full-file scan ---
+    for pos in range(len(lines_stripped) - match_len + 1):
+        if all(
+            lines_stripped[pos + i] == match_stripped[i]
+            for i in range(match_len)
+        ):
+            return (pos, None)
 
     return (-1, None)
 
@@ -228,7 +256,7 @@ def _apply_hunks_to_content(raw: str, patch_text: str) -> dict:
             return {
                 'error': (
                     f'Context not found for hunk at line {hunk["old_start"]} '
-                    f'(searched ±{SEARCH_WINDOW} lines{hint}). '
+                    f'(searched entire file{hint}). '
                     'Action: call read_file() to get the current file content, '
                     f'then reconstruct your patch from scratch.{read_hint}'
                 )
@@ -353,7 +381,7 @@ def apply_hunks(file_path: str, patch_text: str) -> dict:
             return {
                 'error': (
                     f'Context not found for hunk at line {hunk["old_start"]} '
-                    f'(searched ±{SEARCH_WINDOW} lines{hint}). '
+                    f'(searched entire file{hint}). '
                     'Action: call read_file() to get the current file content, '
                     f'then reconstruct your patch from scratch.{read_hint}'
                 )
@@ -393,53 +421,11 @@ def apply_hunks(file_path: str, patch_text: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# System `patch` binary backend
-# ---------------------------------------------------------------------------
-
-def _apply_with_binary(file_path: str, patch_text: str, hunks: list) -> dict:
-    """Apply patch using the system `patch` utility."""
-    with tempfile.NamedTemporaryFile(
-        mode='w', suffix='.patch', delete=False, encoding='utf-8'
-    ) as tf:
-        # system patch binary requires the patch file to end with a newline
-        tf.write(patch_text if patch_text.endswith('\n') else patch_text + '\n')
-        patch_file = tf.name
-
-    try:
-        proc = subprocess.run(
-            [
-                'patch',
-                '--forward',               # don't try to reverse-apply
-                '--no-backup-if-mismatch', # no .orig files
-                '--reject-file=/dev/null', # discard .rej files
-                file_path,
-                patch_file,
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if proc.returncode == 0:
-            return {'result': 'success', 'hunks_applied': len(hunks)}
-        output = '\n'.join(filter(None, [proc.stdout.strip(), proc.stderr.strip()]))
-        return {'error': f'patch failed:\n{output}'}
-    finally:
-        try:
-            os.unlink(patch_file)
-        except OSError:
-            pass
-
-
-# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
 def apply_patch(file_path: str, patch_text: str) -> dict:
-    """
-    Apply a unified diff patch to a file.
-
-    Uses the system `patch` utility if available on PATH; otherwise falls back
-    to the pure-Python implementation (`apply_hunks`).
-    """
+    """Apply a unified diff patch to a file using the pure-Python implementation."""
     try:
         hunks = parse_hunks(patch_text)
     except Exception as e:
@@ -447,37 +433,6 @@ def apply_patch(file_path: str, patch_text: str) -> dict:
 
     if not hunks:
         return {'error': 'No valid hunks found in patch. Make sure it contains @@ hunk headers. For simple edits, consider using str_replace instead.'}
-
-    creating_new = all(h['old_start'] == 0 and h['old_count'] == 0 for h in hunks)
-
-    if not os.path.exists(file_path):
-        if not creating_new:
-            return {'error': f'File not found: {file_path}'}
-        parent = os.path.dirname(os.path.abspath(file_path))
-        os.makedirs(parent, exist_ok=True)
-        open(file_path, 'w').close()
-
-    if shutil.which('patch'):
-        # Read original content so we can restore on partial failure.
-        try:
-            with open(file_path, 'r', encoding='utf-8', errors='replace', newline='') as f:
-                original_content = f.read()
-        except OSError:
-            original_content = None
-
-        result = _apply_with_binary(file_path, patch_text, hunks)
-        if 'error' not in result:
-            return result
-
-        # Binary patch failed (e.g. mismatched hunk counts from LLM) — restore
-        # the original file before falling through to the Python implementation
-        # which is more lenient. The binary may have partially applied hunks.
-        if original_content is not None:
-            try:
-                with open(file_path, 'w', encoding='utf-8', newline='') as f:
-                    f.write(original_content)
-            except OSError:
-                pass
 
     return apply_hunks(file_path, patch_text)
 
