@@ -10,6 +10,7 @@ Uses environment variables:
 
 import json
 import os
+import time
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -44,11 +45,18 @@ def _api(method: str, path: str, body: dict = None, timeout: int = 30) -> dict:
         req.add_header("Authorization", f"Bearer {PINCHTAB_TOKEN}")
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
-            if not raw:
-                return {}
-            return json.loads(raw)
+        for attempt in range(2):
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    raw = resp.read()
+                    if not raw:
+                        return {}
+                    return json.loads(raw)
+            except urllib.error.URLError:
+                if attempt == 0:
+                    time.sleep(1)
+                else:
+                    raise
     except urllib.error.HTTPError as e:
         try:
             err_body = json.loads(e.read())
