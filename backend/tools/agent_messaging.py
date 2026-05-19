@@ -17,11 +17,13 @@ Guard rails:
 - Fan-out limit: max 5 unique targets per 5-second window (per LLM turn)
 """
 
+import json
 import time
 import uuid
 from collections import defaultdict
 from typing import Any, Callable, Dict, List
 
+from backend.agent_state import AgentState
 from backend.logging_config import get_logger
 from models.db import db
 
@@ -244,6 +246,33 @@ def _exec_send_agent_message(args: dict, agent_context: dict) -> dict:
     if not target_agent.get('is_super') and not target_agent.get('enabled', True):
         _logger.warning("Agent '%s' tried to message disabled agent '%s'.", sender_id, target_id)
         return {'error': f"Agent '{target_agent.get('name', target_id)}' is currently disabled."}
+
+    # Focus mode guard — reject messages to agents that are in focus mode
+    # (e.g., working on a kanban task and blocking interruptions from other sessions).
+    if target_agent.get('enable_agent_state'):
+        try:
+            agent_state_json = db.get_agent_state(agent_id=target_id)
+            if agent_state_json:
+                agent_state = AgentState.deserialize(agent_state_json)
+                if agent_state.focus:
+                    reason = agent_state.focus_reason or "no reason specified"
+                    _logger.info(
+                        "Agent '%s' tried to message focused agent '%s' (reason: %s) — blocked.",
+                        sender_id, target_id, reason,
+                    )
+                    return {
+                        'error': (
+                            f"Cannot send message to agent '{target_id}': "
+                            f"agent is currently focused.\n"
+                            f"Focus reason: {reason}"
+                        )
+                    }
+        except Exception as e:
+            _logger.warning(
+                "Failed to check focus state for agent '%s': %s — allowing message through.",
+                target_id, e,
+            )
+            # If we can't read the focus state, err on the side of allowing the message.
 
     # Global rate limit — cap total messages per sender across all targets
     if not _check_global_rate_limit(sender_id):
