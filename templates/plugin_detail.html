@@ -9,6 +9,7 @@
             <span class="text-gray-300">/</span>
             <h2 class="text-xl font-bold text-gray-800 dark:text-gray-100" id="plugin-title">Loading...</h2>
             <span id="plugin-version" class="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded font-mono"></span>
+            <span id="plugin-id-display" class="text-xs text-gray-400 font-mono"></span>
         </div>
         <div class="ml-auto flex items-center gap-3">
             <label class="inline-flex items-center cursor-pointer gap-2">
@@ -365,6 +366,7 @@ async function loadPlugin() {
 
     document.getElementById('plugin-title').textContent = pluginData.name || pluginData.id;
     document.getElementById('plugin-version').textContent = 'v' + (pluginData.version || '?');
+    document.getElementById('plugin-id-display').textContent = 'ID: ' + (pluginData.id || PLUGIN_ID);
     document.getElementById('plugin-enabled').checked = pluginData.enabled;
 
     const meta = [];
