@@ -1,0 +1,15 @@
+[filter]
+command = "^git\\s+diff"
+description = "Compact git diff — keep +/- lines only"
+strip_ansi = true
+strip_lines = [
+    '^diff --git ',
+    '^index ',
+    '^--- ',
+    '^\\+\\+\\+ ',
+    '^@@ ',
+    '^$',
+]
+max_lines = 80
+head_lines = 60
+tail_lines = 20

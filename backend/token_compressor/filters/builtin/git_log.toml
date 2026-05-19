@@ -1,0 +1,13 @@
+[filter]
+command = "^git\\s+log"
+description = "Compact git log — last 10 commits, no merges"
+strip_ansi = true
+strip_lines = [
+    '^Merge: ',
+    '^Author: ',
+    '^Date: ',
+    '^$',
+]
+head_lines = 30
+max_lines = 30
+on_empty = "git log: no commits"

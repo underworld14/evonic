@@ -250,7 +250,7 @@ def _compile_filter(raw: dict, source: str) -> CompiledFilter:
             ) from exc
 
     # --- numeric helpers ---
-    def _get_positive_int(key: str) -> Optional[int]:
+    def _get_int(key: str, min_val: int = 1) -> Optional[int]:
         val = raw.get(key)
         if val is None:
             return None
@@ -264,17 +264,17 @@ def _compile_filter(raw: dict, source: str) -> CompiledFilter:
                 f"'{key}' must be an integer, got {type(val).__name__}",
                 path=path_ref,
             )
-        if val < 1:
+        if val < min_val:
             raise FilterParseError(
-                f"'{key}' must be >= 1, got {val}",
+                f"'{key}' must be >= {min_val}, got {val}",
                 path=path_ref,
             )
         return val
 
-    truncate_lines_at = _get_positive_int("truncate_lines_at")
-    head_lines = _get_positive_int("head_lines")
-    tail_lines = _get_positive_int("tail_lines")
-    max_lines = _get_positive_int("max_lines")
+    truncate_lines_at = _get_int("truncate_lines_at", min_val=1)
+    head_lines = _get_int("head_lines", min_val=0)
+    tail_lines = _get_int("tail_lines", min_val=0)
+    max_lines = _get_int("max_lines", min_val=1)
 
     # --- on_empty ---
     on_empty = raw.get("on_empty")
@@ -316,9 +316,11 @@ def _compile_filter(raw: dict, source: str) -> CompiledFilter:
 # ---------------------------------------------------------------------------
 
 def load_filter(path: str | Path) -> CompiledFilter:
-    """Parse a single TOML file into a CompiledFilter.
+    """Parse a single-filter TOML file into a CompiledFilter.
 
-    The TOML file must contain a [filter] table.
+    The TOML file must contain a single [filter] table.
+
+    For multi-filter files using [[filter]] syntax, use load_filters_from_file().
 
     Args:
         path: Path to the .toml file.
@@ -354,6 +356,58 @@ def load_filter(path: str | Path) -> CompiledFilter:
         )
 
     return _compile_filter(table, source=str(path))
+
+
+def load_filters_from_file(path: str | Path) -> list[CompiledFilter]:
+    """Parse a TOML file that may contain multiple [[filter]] entries.
+
+    Supports both single [filter] (dict) and multiple [[filter]]
+    (array of tables) syntax.
+
+    Args:
+        path: Path to the .toml file.
+
+    Returns:
+        List of CompiledFilter instances (one per [[filter]] entry).
+
+    Raises:
+        FilterParseError: On any validation or parsing failure.
+    """
+    path = Path(path)
+    try:
+        with open(path, "rb") as fh:
+            data = tomllib.load(fh)
+    except tomllib.TOMLDecodeError as exc:
+        raise FilterParseError(
+            f"Invalid TOML: {exc}",
+            path=path,
+        ) from exc
+
+    raw = data.get("filter")
+    if raw is None:
+        raise FilterParseError(
+            "TOML file missing required [filter] or [[filter]] table(s)",
+            path=path,
+        )
+
+    # Normalise: single [filter] dict -> one-element list
+    if isinstance(raw, dict):
+        entries = [raw]
+    elif isinstance(raw, list):
+        if not raw:
+            raise FilterParseError(
+                "TOML file has empty [[filter]] list",
+                path=path,
+            )
+        entries = raw
+    else:
+        raise FilterParseError(
+            f"'filter' must be a table or array of tables, "
+            f"got {type(raw).__name__}",
+            path=path,
+        )
+
+    return [_compile_filter(entry, source=str(path)) for entry in entries]
 
 
 def load_filters(
@@ -395,7 +449,7 @@ def load_filters(
 
         for toml_file in sorted(dir_path.glob("*.toml")):
             try:
-                f = load_filter(toml_file)
+                filters = load_filters_from_file(toml_file)
             except FilterParseError:
                 raise
             except Exception as exc:
@@ -404,10 +458,8 @@ def load_filters(
                     path=toml_file,
                 ) from exc
 
-            key = f.command_re.pattern
-            if key in merged:
-                # Higher-priority level replaces the earlier one.
-                pass  # fall through to assignment below
-            merged[key] = f
+            for f in filters:
+                key = f.command_re.pattern
+                merged[key] = f
 
     return merged

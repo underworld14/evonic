@@ -1,0 +1,3 @@
+[filter]
+command = "^echo\\b"
+description = "echo — pass through unchanged"

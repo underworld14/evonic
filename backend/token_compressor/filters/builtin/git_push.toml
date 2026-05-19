@@ -1,0 +1,17 @@
+[filter]
+command = "^git\\s+push"
+description = "Compact git push — final summary only"
+strip_ansi = true
+strip_lines = [
+    '^Enumerating objects:',
+    '^Counting objects:',
+    '^Delta compression',
+    '^Writing objects:',
+    '^Total ',
+    '^remote: ',
+    '^To ',
+    '^ \\* \\[new branch\\]',
+    '^$',
+]
+head_lines = 5
+on_empty = "git push: ok"

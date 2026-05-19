@@ -1,0 +1,11 @@
+[filter]
+command = "^(read|read_file)\\b"
+description = "Compact read/read_file — strip blanks, cap line length"
+strip_ansi = true
+strip_lines = [
+    '^\\s*$',
+]
+truncate_lines_at = 200
+max_lines = 150
+head_lines = 100
+tail_lines = 50
