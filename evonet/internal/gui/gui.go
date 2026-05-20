@@ -86,6 +86,8 @@ func showConnectorView(a fyne.App, w fyne.Window, root *fyne.Container, cfg *con
 
 	resetBtn := widget.NewButton("Reset", nil)
 
+	clearBtn := widget.NewButton("Clear", nil)
+
 	aboutBtn := widget.NewButton("About", nil)
 	aboutBtn.Importance = widget.LowImportance
 	aboutBtn.OnTapped = func() {
@@ -93,7 +95,7 @@ func showConnectorView(a fyne.App, w fyne.Window, root *fyne.Container, cfg *con
 	}
 
 	topBar := container.NewBorder(nil, nil, aboutBtn,
-		container.NewHBox(resetBtn, toggleBtn),
+		container.NewHBox(resetBtn, clearBtn, toggleBtn),
 		container.NewStack(statusLabel, container.NewPadded(connectedText)),
 	)
 	connectorView := container.NewBorder(topBar, nil, nil, nil, logScroll)
@@ -159,6 +161,10 @@ func showConnectorView(a fyne.App, w fyne.Window, root *fyne.Container, cfg *con
 		lw.close()
 		config.Save(&config.Config{}) //nolint — best-effort clear
 		showPairingView(a, w, root, "")
+	}
+
+	clearBtn.OnTapped = func() {
+		lw.Clear()
 	}
 
 	w.SetOnClosed(func() {
