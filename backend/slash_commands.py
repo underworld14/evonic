@@ -435,6 +435,60 @@ def _register_builtins():
         "Switch to plan mode",
     )
 
+    # /exec — Switch agent to execute mode
+    def exec_handler(
+        session_id: str,
+        agent_id: str,
+        external_user_id: str,
+        channel_id: Optional[str],
+        args: str,
+    ) -> str:
+        from models.db import db
+        from backend.agent_state import AgentState
+        from models.chat import agent_chat_manager
+
+        # Check if agent state is enabled for this agent
+        agent = db.get_agent(agent_id)
+        if not agent:
+            return "Error: Agent not found."
+
+        if not agent.get("enable_agent_state"):
+            return "Agent state is not enabled for this agent."
+
+        # Load current per-session state
+        _db = agent_chat_manager.get(agent_id)
+        session_content = _db.get_session_state(session_id)
+
+        if session_content:
+            ms = AgentState.deserialize(session_content)
+        else:
+            ms = AgentState()  # fresh plan-mode state
+
+        # Transition to execute mode
+        result = ms.set_mode("execute", reason="slash command /exec")
+        if "error" in result:
+            return f"Error: {result['error']}"
+
+        # Save per-session state (mode changed to execute)
+        import json
+        session_data = {
+            "mode": ms.mode,
+            "tasks": ms.tasks,
+            "next_task_id": ms._next_task_id,
+            "plan_file": ms.plan_file,
+            "states": ms.states,
+            "auto_trivial": ms.auto_trivial,
+        }
+        _db.upsert_session_state(session_id, json.dumps(session_data))
+
+        return "Switched to execute mode."
+
+    command_registry.register(
+        "exec",
+        exec_handler,
+        "Switch to execute mode",
+    )
+
     def unfocus_handler(
         session_id: str,
         agent_id: str,
