@@ -3,6 +3,7 @@ context.py — builds LLM input: system prompt, tool list, message formatting.
 
 Pure data preparation — no LLM calls, no threading.
 """
+from __future__ import annotations
 
 import json
 import logging
