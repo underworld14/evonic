@@ -193,7 +193,7 @@ function renderRecentRuns(runs) {
     for (var i = 0; i < runs.length; i++) {
         var r = runs[i];
         var modelName = r.model_name || 'Unknown model';
-        var runIdStr = String(r.run_id).padStart(4, '0');
+        var runIdStr = String(r.run_id);
 
         var scoreHtml = '';
         if (r.overall_score !== null && r.overall_score !== undefined) {

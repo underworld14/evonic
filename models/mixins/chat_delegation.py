@@ -27,14 +27,23 @@ class ChatDelegationMixin:
             pass
 
     def get_or_create_session(self, agent_id: str, external_user_id: str,
-                               channel_id: str = None) -> str:
+                               channel_id: str = None,
+                               db_agent_id: str = None) -> str:
+        """Get or create a session.
+
+        Args:
+            agent_id: Stored in the session's agent_id column.
+            db_agent_id: If provided, selects which per-agent chat DB to use
+                (e.g. parent's DB for sub-agents). Defaults to agent_id.
+        """
+        _db_id = db_agent_id or agent_id
         channel_type = None
         if channel_id:
             ch = self.get_channel(channel_id)
             channel_type = ch.get('type') if ch else None
-        session_id = self._chat_db(agent_id).get_or_create_session(
+        session_id = self._chat_db(_db_id).get_or_create_session(
             agent_id, external_user_id, channel_id, channel_type=channel_type)
-        self._refresh_session_count(agent_id)
+        self._refresh_session_count(_db_id)
         return session_id
 
     def get_session_messages(self, session_id: str, limit: int = 50,
@@ -46,11 +55,20 @@ class ChatDelegationMixin:
 
     def add_chat_message(self, session_id: str, role: str, content: str = None,
                           tool_calls: Any = None, tool_call_id: str = None,
-                          agent_id: str = None, metadata: dict = None) -> int:
+                          agent_id: str = None, metadata: dict = None,
+                          db_agent_id: str = None) -> int:
+        """Add a chat message.
+
+        Args:
+            agent_id: Used for _find_agent_for_session fallback and last_active_at.
+            db_agent_id: If provided, selects which per-agent chat DB to use
+                (e.g. parent's DB for sub-agents). Defaults to agent_id.
+        """
         agent_id = agent_id or self._find_agent_for_session(session_id)
         if not agent_id:
             return -1
-        result = self._chat_db(agent_id).add_chat_message(session_id, role, content, tool_calls, tool_call_id, metadata=metadata)
+        _db_id = db_agent_id or agent_id
+        result = self._chat_db(_db_id).add_chat_message(session_id, role, content, tool_calls, tool_call_id, metadata=metadata)
         # Update last_active_at only for user/assistant messages — NOT for tool
         # calls or tool results, which can fire dozens of times per turn and
         # cause constant write pressure on the main DB (WAL checkpoint contention
@@ -77,8 +95,14 @@ class ChatDelegationMixin:
     def upsert_agent_state(self, content: str, agent_id: str):
         self._chat_db(agent_id).upsert_agent_state(content)
 
-    def get_agent_state(self, agent_id: str) -> str | None:
+    def get_agent_state(self, agent_id: str) -> Optional[str]:
         return self._chat_db(agent_id).get_agent_state()
+
+    def upsert_session_state(self, session_id: str, content: str, agent_id: str):
+        self._chat_db(agent_id).upsert_session_state(session_id, content)
+
+    def get_session_state(self, session_id: str, agent_id: str) -> Optional[str]:
+        return self._chat_db(agent_id).get_session_state(session_id)
 
     def clear_session(self, session_id: str, agent_id: str = None):
         agent_id = agent_id or self._find_agent_for_session(session_id)
@@ -101,6 +125,12 @@ class ChatDelegationMixin:
             self._chat_db(agent_id).upsert_summary(
                 session_id, summary, last_message_id, message_count,
                 last_message_ts=last_message_ts)
+
+    def get_agent_summaries(self, agent_id: str, query: str = "", limit: int = 50) -> List[Dict[str, Any]]:
+        """List all session summaries for an agent with optional keyword filter."""
+        if not agent_id:
+            return []
+        return self._chat_db(agent_id).get_agent_summaries(query=query, limit=limit)
 
     def get_messages_after(self, session_id: str, after_id: int,
                             agent_id: str = None):
@@ -138,13 +168,23 @@ class ChatDelegationMixin:
             except FileNotFoundError:
                 pass
             self._refresh_session_count(agent_id)
+            # Wipe attachments tied to this session (rows + on-disk files) so
+            # they don't linger unreachable after the conversation is gone.
+            try:
+                self.delete_session_attachments(session_id, agent_id)
+            except (sqlite3.Error, OSError, ValueError) as e:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Failed to clear attachments for session %s: %s",
+                    session_id, e,
+                )
         return result
 
-    def get_first_agent_request_metadata(self, session_id: str, agent_id: str = None) -> dict | None:
+    def get_latest_agent_request_metadata(self, session_id: str, agent_id: str = None, sender_agent_id: str = None) -> Optional[dict]:
         agent_id = agent_id or self._find_agent_for_session(session_id)
         if not agent_id:
             return None
-        return self._chat_db(agent_id).get_first_agent_request_metadata(session_id)
+        return self._chat_db(agent_id).get_latest_agent_request_metadata(session_id, sender_agent_id)
 
     def get_session_messages_full(self, session_id: str, agent_id: str = None) -> List[Dict[str, Any]]:
         agent_id = agent_id or self._find_agent_for_session(session_id)
@@ -178,6 +218,16 @@ class ChatDelegationMixin:
     def get_latest_human_session(self, agent_id: str) -> Optional[Dict[str, Any]]:
         return self._chat_db(agent_id).get_latest_human_session(agent_id)
 
+    def get_web_fallback_session(self, agent_id: str,
+                                  exclude_session_id: str = None) -> Optional[Dict[str, Any]]:
+        """Return the most recent web session (no channel) for a human user.
+
+        Delegates to the per-agent chat DB so escalate_to_user can deliver
+        messages to the web UI as a secondary target.
+        """
+        return self._chat_db(agent_id).get_web_fallback_session(
+            agent_id, exclude_session_id=exclude_session_id)
+
     def get_session_with_details(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Find session across all agent DBs and enrich with agent/channel info."""
         agent_id = self._find_agent_for_session(session_id)
@@ -186,9 +236,11 @@ class ChatDelegationMixin:
         session = self._chat_db(agent_id).get_session(session_id)
         if not session:
             return None
-        # Enrich with agent and channel info from main DB
-        agent = self.get_agent(agent_id)
-        session['agent_name'] = agent['name'] if agent else 'Unknown'
+        # Enrich with agent and channel info from main DB.
+        # Sub-agents have no DB entry, so fall back to the session's own agent_id.
+        agent = self.get_agent(session.get('agent_id') or agent_id)
+        session['agent_name'] = (agent['name'] if agent
+                                 else (session.get('agent_id') or 'Unknown'))
         if session.get('channel_id'):
             ch = self.get_channel(session['channel_id'])
             session['channel_type'] = ch.get('type') if ch else None
@@ -275,11 +327,12 @@ class ChatDelegationMixin:
 
                 union_body = " UNION ALL ".join(arms)
                 data_sql = f"""
-                    SELECT combined.*, ag.name AS agent_name,
+                    SELECT combined.*,
+                           COALESCE(ag.name, combined.agent_id) AS agent_name,
                            ch.type AS channel_type, ch.name AS channel_name,
                            peer.name AS peer_agent_name
                     FROM ({union_body}) combined
-                    JOIN agents ag ON ag.id = combined.agent_id
+                    LEFT JOIN agents ag ON ag.id = combined.agent_id
                     LEFT JOIN channels ch ON ch.id = combined.channel_id
                     LEFT JOIN agents peer ON (
                         combined.external_user_id LIKE '__agent__%'
@@ -314,11 +367,26 @@ class ChatDelegationMixin:
         return None
 
     def clear_all_sessions(self):
-        """Drop all chat sessions, messages, and summaries across all agents."""
+        """Drop all chat sessions, messages, and summaries across all agents.
+
+        Also removes every stored attachment (rows + on-disk files) since they
+        are no longer reachable once the sessions referencing them are gone.
+        """
         agents = self.get_agents()
         for agent in agents:
             chat_db = self._chat_db(agent['id'])
             chat_db.clear_all()
+        # Wipe attachments after sessions to keep storage in sync with the
+        # newly-cleared chat history.
+        try:
+            self.delete_all_attachments()
+        except (sqlite3.Error, OSError) as e:
+            # Logged inside delete_all_attachments for per-file errors; this
+            # catches DB-level issues without breaking the session clear.
+            import logging
+            logging.getLogger(__name__).warning(
+                "Failed to clear attachments during clear_all_sessions: %s", e
+            )
 
     # ---- Long-term Memory delegation ----
 

@@ -12,21 +12,28 @@ import base64
 import logging
 import os
 import shlex
+import threading
 import time
 
 from backend.tools.lib.exec_backend import ExecutionBackend, truncate, file_stat_code, parse_file_stat_output
+from backend.tools.lib.process_tracker import process_tracker
 
 logger = logging.getLogger(__name__)
 
 _MAX_OUTPUT_BYTES = 64 * 1024  # 64 KB
 _MAX_RETRIES = 5
 
+# Path to local runpy_helpers directory (evonic package) for uploading to remote.
+_HELPERS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', 'runpy_helpers'))
+_REMOTE_EVONIC_DIR = '~/.evonic/evonic'
+
 
 class SSHBackend(ExecutionBackend):
     """Executes bash/python on a remote server via SSH."""
 
     def __init__(self, host: str, username: str, port: int = 22,
-                 password: str = None, key_path: str = None, passphrase: str = None):
+                 password: str = None, key_path: str = None, passphrase: str = None,
+                 session_id: str = ''):
         try:
             import paramiko
         except ImportError:
@@ -40,6 +47,11 @@ class SSHBackend(ExecutionBackend):
         self._passphrase = passphrase
         self._connected_at = None
         self._last_used = None
+        self._session_id = session_id
+        self._kill_flag = threading.Event()
+        self._remote_pid = None
+        self._active_channel = None
+        self._evonic_installed = False
 
         self._client = paramiko.SSHClient()
         self._client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -81,16 +93,31 @@ class SSHBackend(ExecutionBackend):
             self._host, self._port, self._username,
         )
 
-    def _exec_once(self, command: str, stdin_data: str, timeout: int) -> dict:
-        """Single execution attempt. Returns _connection_lost=True when transport dies mid-run."""
+    def _exec_once(self, command: str, stdin_data: str, timeout: int,
+                   _track_pid: bool = False) -> dict:
+        """Single execution attempt. Returns _connection_lost=True when transport dies mid-run.
+
+        Tracks the remote PID so kill() can send SIGTERM.
+        """
         # Health check before exec
         transport = self._client.get_transport()
         if transport is None or not transport.is_active():
             return {'error': 'Transport not active before exec', 'exit_code': -1, '_connection_lost': True}
 
+        # Clear kill flag for this execution
+        self._kill_flag.clear()
+        self._remote_pid = None
+        self._active_channel = None
+
+        # When tracking PID, prepend an echo of $$ to capture the remote process PID
+        effective_cmd = command
+        if _track_pid:
+            effective_cmd = 'echo "EVONIC_PID:$$"; ' + command
+
         t0 = time.time()
         try:
-            stdin, stdout, stderr = self._client.exec_command(command, timeout=timeout)
+            stdin, stdout, stderr = self._client.exec_command(effective_cmd, timeout=timeout)
+            self._active_channel = stdout.channel
             if stdin_data:
                 stdin.write(stdin_data)
                 stdin.channel.shutdown_write()
@@ -102,6 +129,20 @@ class SSHBackend(ExecutionBackend):
 
             while not channel.exit_status_ready():
                 now = time.time()
+
+                # Check for external kill request
+                if self._kill_flag.is_set():
+                    elapsed_so_far = round(now - t0, 1)
+                    logger.info(
+                        "[ssh_exec] KILL requested host=%s elapsed=%.1fs",
+                        self._host, elapsed_so_far,
+                    )
+                    channel.close()
+                    return {
+                        'error': 'Execution stopped by user',
+                        'exit_code': -9,
+                        'execution_time': elapsed_so_far,
+                    }
 
                 # Detect silent connection drop — keepalive marks transport inactive within ~15s
                 tr = self._client.get_transport()
@@ -134,8 +175,27 @@ class SSHBackend(ExecutionBackend):
                 time.sleep(0.05)
 
             exit_code = channel.recv_exit_status()
-            out = truncate(stdout.read().decode('utf-8', errors='replace'), _MAX_OUTPUT_BYTES)
+            raw_out = stdout.read().decode('utf-8', errors='replace')
+            out = truncate(raw_out, _MAX_OUTPUT_BYTES)
             err = truncate(stderr.read().decode('utf-8', errors='replace'), _MAX_OUTPUT_BYTES)
+
+            # Parse remote PID from first line if tracking
+            if _track_pid:
+                lines = raw_out.split('\n', 1)
+                if lines[0].startswith('EVONIC_PID:'):
+                    try:
+                        self._remote_pid = int(lines[0].split(':', 1)[1].strip())
+                        logger.info(
+                            "[ssh_exec] Captured remote PID=%s host=%s",
+                            self._remote_pid, self._host,
+                        )
+                    except (ValueError, IndexError):
+                        self._remote_pid = None
+                    # Strip the PID line from output
+                    if len(lines) > 1:
+                        out = truncate(lines[1], _MAX_OUTPUT_BYTES)
+                    else:
+                        out = ''
 
         except Exception as e:
             elapsed = round(time.time() - t0, 3)
@@ -143,10 +203,12 @@ class SSHBackend(ExecutionBackend):
                 "[ssh_exec] EXCEPTION host=%s after %.3fs err=%r type=%s",
                 self._host, elapsed, str(e), type(e).__name__,
             )
+            self._active_channel = None
             return {'error': str(e), 'exit_code': -1}
 
         elapsed = round(time.time() - t0, 3)
         self._last_used = time.time()
+        self._active_channel = None
         logger.debug("[ssh_exec] DONE host=%s exit_code=%s elapsed=%ss", self._host, exit_code, elapsed)
         return {
             'stdout': out,
@@ -155,15 +217,46 @@ class SSHBackend(ExecutionBackend):
             'execution_time': elapsed,
         }
 
-    def _exec(self, command: str, stdin_data: str, timeout: int) -> dict:
+    def _force_stop(self):
+        """Kill the currently running remote process via SIGTERM."""
+        # Set the kill flag so _exec_once's polling loop exits
+        self._kill_flag.set()
+
+        # Try to close the active channel (terminates remote process)
+        channel = self._active_channel
+        if channel is not None and not channel.closed:
+            try:
+                channel.close()
+            except Exception:
+                pass
+
+        # Also send SIGTERM to the remote PID if known
+        if self._remote_pid:
+            try:
+                kill_stdin, kill_stdout, kill_stderr = self._client.exec_command(
+                    f'kill -TERM {self._remote_pid} 2>/dev/null; '
+                    f'sleep 0.1; '
+                    f'kill -KILL {self._remote_pid} 2>/dev/null',
+                    timeout=5,
+                )
+                kill_stdout.channel.close()
+            except Exception:
+                pass
+
+    def _exec(self, command: str, stdin_data: str, timeout: int,
+              _track_pid: bool = False) -> dict:
         """Run a command over SSH with transparent reconnect + exponential backoff on connection loss.
 
         The caller (and the agent's LLM loop) never sees a mid-run disconnect — this method
         blocks through reconnects and re-runs the command on the fresh connection.
         Up to _MAX_RETRIES (5) reconnect attempts; backoff: 1, 2, 4, 8, 16 seconds.
+
+        Args:
+            _track_pid: If True, prepend ``echo "EVONIC_PID:$$";`` to command
+                and parse the remote PID from the first stdout line.
         """
         for attempt in range(_MAX_RETRIES + 1):
-            result = self._exec_once(command, stdin_data, timeout)
+            result = self._exec_once(command, stdin_data, timeout, _track_pid=_track_pid)
 
             if not result.pop('_connection_lost', False):
                 # Success or non-connection error (timeout, bad exit code, etc.) — return as-is
@@ -200,20 +293,75 @@ class SSHBackend(ExecutionBackend):
 
         return {'error': f'SSH connection lost after {_MAX_RETRIES} reconnect attempts', 'exit_code': -1}
 
+    def _tracked_exec(self, command: str, stdin_data: str, timeout: int) -> dict:
+        """Run an SSH command with PID tracking for kill support.
+
+        Wraps the command to capture the remote PID, registers with
+        process_tracker, and unregisters on completion.
+        """
+        # We use process_tracker with a custom object that delegates to _force_stop
+        class _SSHKillHandle:
+            __slots__ = ('_backend',)
+            def __init__(self, backend):
+                self._backend = backend
+            def kill(self):
+                self._backend._force_stop()
+
+        handle = _SSHKillHandle(self)
+        # Use a unique placeholder PID for logging (real remote PID captured inside _exec_once)
+        process_tracker.register(self._session_id, handle, 0)
+        try:
+            return self._exec(command, stdin_data, timeout, _track_pid=True)
+        finally:
+            process_tracker.unregister(self._session_id)
+
+    def _ensure_evonic_on_remote(self):
+        """Upload evonic helpers to ~/.evonic/evonic/ on first run_python call.
+
+        Mirrors how DockerBackend mounts the helpers and LocalBackend sets
+        PYTHONPATH, adapted for remote execution via SFTP.
+        """
+        if self._evonic_installed:
+            return
+        remote_dir = os.path.expanduser(_REMOTE_EVONIC_DIR)
+        remote_bin = remote_dir + '/bin'
+        self._exec(f'mkdir -p {shlex.quote(remote_dir)} {shlex.quote(remote_bin)}', '', 10)
+        files = [
+            ('__init__.py', f'{remote_dir}/__init__.py'),
+            ('display.py', f'{remote_dir}/display.py'),
+            ('http.py', f'{remote_dir}/http.py'),
+            ('bin/rg', f'{remote_bin}/rg'),
+        ]
+        for rel_path, remote_path in files:
+            local_path = os.path.join(_HELPERS_DIR, rel_path)
+            if os.path.isfile(local_path):
+                result = self.sftp_upload(local_path, remote_path)
+                if 'error' in result:
+                    logger.warning('[ssh_evonic] Upload failed %s: %s', rel_path, result['error'])
+                    return
+        self._exec(f'chmod +x {shlex.quote(remote_bin)}/rg', '', 5)
+        self._evonic_installed = True
+        logger.info('[ssh_evonic] Installed evonic helpers on %s', self._host)
+
     def run_bash(self, script: str, timeout: int, env: dict) -> dict:
         # Prepend env exports before the script
         env_prefix = ''.join(
             f"export {k}={_shell_quote(v)}\n" for k, v in env.items()
         )
-        return self._exec('bash -s', env_prefix + script, timeout)
+        return self._tracked_exec('bash -s', env_prefix + script, timeout)
 
     def run_python(self, code: str, timeout: int, env: dict) -> dict:
+        self._ensure_evonic_on_remote()
+        remote_dir = os.path.expanduser(_REMOTE_EVONIC_DIR)
+        merged = dict(env or {})
+        existing = merged.get('PYTHONPATH', '')
+        merged['PYTHONPATH'] = f'{remote_dir}:{existing}'.rstrip(':')
         env_prefix = ''.join(
-            f"export {k}={_shell_quote(v)}\n" for k, v in env.items()
+            f"export {k}={_shell_quote(v)}\n" for k, v in merged.items()
         )
         # Wrap: set env vars in shell, then pipe code to python3
         wrapper = env_prefix + 'python3 -'
-        return self._exec('bash -c ' + _shell_quote(wrapper), code, timeout)
+        return self._tracked_exec('bash -c ' + _shell_quote(wrapper), code, timeout)
 
     def file_exists(self, path: str) -> bool:
         r = self._exec(f'test -e {shlex.quote(path)} && echo yes || echo no', '', 5)
@@ -247,6 +395,54 @@ class SSHBackend(ExecutionBackend):
         if r.get('exit_code', 1) != 0:
             return {'error': r.get('stderr', '') or r.get('error', 'mkdir failed')}
         return {'ok': True}
+
+    def sftp_upload(self, local_path: str, remote_path: str, progress_cb=None) -> dict:
+        """Upload a local file to the remote host via SFTP (binary-safe, no size limit)."""
+        try:
+            remote_dir = remote_path.rsplit('/', 1)[0] if '/' in remote_path else ''
+            if remote_dir:
+                self._exec(f'mkdir -p {shlex.quote(remote_dir)}', '', 10)
+            sftp = self._client.open_sftp()
+            try:
+                sftp.put(local_path, remote_path, callback=progress_cb)
+                return {'ok': True}
+            finally:
+                sftp.close()
+        except Exception as e:
+            # Retry once on connection loss
+            try:
+                self._connect()
+                sftp = self._client.open_sftp()
+                try:
+                    sftp.put(local_path, remote_path, callback=progress_cb)
+                    return {'ok': True}
+                finally:
+                    sftp.close()
+            except Exception as e2:
+                return {'error': f'SFTP upload failed: {e2}'}
+
+    def sftp_download(self, remote_path: str, local_path: str, progress_cb=None) -> dict:
+        """Download a file from the remote host to local filesystem via SFTP (binary-safe)."""
+        try:
+            os.makedirs(os.path.dirname(local_path) or '.', exist_ok=True)
+            sftp = self._client.open_sftp()
+            try:
+                sftp.get(remote_path, local_path, callback=progress_cb)
+                return {'ok': True}
+            finally:
+                sftp.close()
+        except Exception as e:
+            # Retry once on connection loss
+            try:
+                self._connect()
+                sftp = self._client.open_sftp()
+                try:
+                    sftp.get(remote_path, local_path, callback=progress_cb)
+                    return {'ok': True}
+                finally:
+                    sftp.close()
+            except Exception as e2:
+                return {'error': f'SFTP download failed: {e2}'}
 
     def destroy(self) -> dict:
         try:

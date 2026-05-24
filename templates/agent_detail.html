@@ -60,6 +60,8 @@ html.dark #compiled-prompt-modal .bg-purple-50 { background: #2e1065 !important;
 html.dark #compiled-prompt-modal .bg-blue-50 { background: #172554 !important; }
 html.dark #compiled-prompt-modal .bg-green-50 { background: #052e16 !important; }
 html.dark #compiled-prompt-modal .bg-amber-50 { background: #451a03 !important; }
+html.dark #compiled-prompt-modal .border-purple-200 { border-color: #5b21b6 !important; }
+html.dark #compiled-prompt-modal .border-amber-200 { border-color: #92400e !important; }
 html.dark #compiled-prompt-modal .border-l-purple-400 { border-color: #a78bfa !important; }
 html.dark #compiled-prompt-modal .border-l-blue-400 { border-color: #60a5fa !important; }
 html.dark #compiled-prompt-modal .border-l-green-400 { border-color: #4ade80 !important; }
@@ -73,6 +75,9 @@ html.dark #compiled-prompt-modal .bg-amber-100 { background: #451a03 !important;
 html.dark #compiled-prompt-modal .text-amber-700 { color: #fcd34d !important; }
 html.dark #compiled-prompt-modal .tab-btn { color: #9ca3af !important; }
 html.dark #compiled-prompt-modal .tab-btn:hover { color: #f3f4f6 !important; }
+/* Chevron rotation for collapsible sections */
+#compiled-prompt-modal .chevron { display: inline-block; transition: transform 0.2s ease; }
+#compiled-prompt-modal .chevron.rotated { transform: rotate(90deg); }
 /* Dark mode: Skills tab (selected skill badges) */
 html.dark #tab-skills .bg-white { background: #1f2937 !important; }
 html.dark #tab-skills .border-gray-200 { border-color: #374151 !important; }
@@ -90,6 +95,31 @@ html.dark #tab-skills .border-amber-200 { border-color: #92400e !important; }
 html.dark #tab-skills .text-amber-800 { color: #fcd34d !important; }
 html.dark #tab-skills .text-amber-600 { color: #fbbf24 !important; }
 html.dark #tab-skills .text-amber-500 { color: #fbbf24 !important; }
+/* Dark mode: Artifacts tab */
+html.dark #tab-artifacts .bg-white { background: #1f2937 !important; }
+html.dark #tab-artifacts .border-gray-200 { border-color: #374151 !important; }
+html.dark #tab-artifacts .text-gray-800 { color: #f3f4f6 !important; }
+html.dark #tab-artifacts .text-gray-400 { color: #9ca3af !important; }
+html.dark #tab-artifacts .text-gray-500 { color: #9ca3af !important; }
+html.dark #tab-artifacts .hover\:bg-gray-100:hover { background: #374151 !important; }
+html.dark #tab-artifacts .bg-gray-50 { background: #374151 !important; }
+html.dark #tab-artifacts .text-gray-600 { color: #d1d5db !important; }
+html.dark #tab-artifacts .text-red-500 { color: #f87171 !important; }
+html.dark #tab-artifacts .hover\:text-red-700:hover { color: #fca5a5 !important; }
+html.dark #tab-artifacts .bg-red-50 { background: #451a1a !important; }
+/* Dark mode: Artifact viewer modal */
+html.dark #artifact-viewer-modal > div { background: #1f2937; }
+html.dark #artifact-viewer-modal .border-gray-200 { border-color: #374151; }
+html.dark #artifact-viewer-modal .border-gray-100 { border-color: #374151; }
+html.dark #artifact-viewer-modal .text-gray-800 { color: #f3f4f6; }
+html.dark #artifact-viewer-modal .text-gray-700 { color: #e5e7eb; }
+html.dark #artifact-viewer-modal .text-gray-600 { color: #d1d5db; }
+html.dark #artifact-viewer-modal .text-gray-500 { color: #9ca3af; }
+html.dark #artifact-viewer-modal .text-gray-400 { color: #6b7280; }
+html.dark #artifact-viewer-modal .bg-gray-50 { background: #374151; }
+html.dark #artifact-viewer-modal .bg-gray-100 { background: #4b5563; }
+html.dark #artifact-viewer-modal .bg-white { background: #1f2937; }
+html.dark #artifact-viewer-modal .hover\\:bg-gray-100:hover { background: #4b5563; }
 /* Dark mode: Channel detail modal */
 html.dark #channel-detail-modal .bg-gray-50 { background: #374151 !important; }
 html.dark #channel-detail-modal .border-gray-100 { border-color: #4b5563 !important; }
@@ -105,7 +135,7 @@ html.dark #channel-detail-modal .bg-indigo-50 { background: #1e1b4b !important; 
 html.dark #channel-detail-modal .text-indigo-600 { color: #a5b4fc !important; }
 html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e81 !important; }
 </style>
-<div class="px-2 py-1 md:py-4 flex-1 min-h-0 flex flex-col h-[calc(100vh-3rem)]">
+<div class="px-2 py-1 md:py-4 flex-1 min-h-0 flex flex-col h-[calc(100dvh-var(--header-h,56px))]">
     {% if workspace_invalid %}
     <div class="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg px-4 py-3 mb-4 flex-shrink-0">
         <div class="flex items-start gap-3">
@@ -167,6 +197,10 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
         <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('skills')" data-tab="skills">Skills</button>
         {% endif %}
         <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('channels')" data-tab="channels">Channels</button>
+        <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('portals')" data-tab="portals">Portals</button>
+        {% if agent.artifacts_enabled %}
+        <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('artifacts')" data-tab="artifacts">Artifacts</button>
+        {% endif %}
     </div>
 
     <!-- Settings Tab -->
@@ -199,6 +233,13 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
                 </select>
                 <p class="text-xs text-gray-400 mt-1">Select a model configured in Settings &gt; Models. "Use global default" uses whichever model is marked as default.</p>
             </div>
+            <div class="mb-4">
+                <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Fallback Model</label>
+                <select id="agent-fallback-model-select" class="w-full p-2.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100">
+                    <option value="">-- None (no fallback) --</option>
+                </select>
+                <p class="text-xs text-gray-400 mt-1">If the primary model fails after all retries, the agent will automatically attempt this fallback model. Leave empty to skip fallback.</p>
+            </div>
             <!-- Workplace Selector -->
             <div class="mb-4">
                 <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Workplace</label>
@@ -224,7 +265,7 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
                         <p class="text-xs text-gray-400 mt-0.5">Run code tools (Python, Bash) inside a Docker container. Disable to run directly on the host.</p>
                     </div>
                 </label>
-                <div id="sandbox-warning" class="hidden mt-1.5 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded px-2.5 py-1.5">⚠ Docker Sandbox hanya tersedia untuk local workplace mode.</div>
+                <div id="sandbox-warning" class="hidden mt-1.5 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded px-2.5 py-1.5">⚠ Docker Sandbox only available for local workplace.</div>
             </div>
             <div class="mb-4">
                 <label class="flex items-center gap-3 cursor-pointer select-none">
@@ -258,6 +299,20 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
             </div>
             <div class="mb-4">
                 <label class="flex items-center gap-3 cursor-pointer select-none">
+                    {{ toggle_widget(id='agent-attachments', checked=agent.attachments_enabled) }}
+                    <div>
+                        <span class="text-gray-600 dark:text-gray-300 text-sm font-medium">Attachments (Files)</span>
+                        <p class="text-xs text-gray-400 mt-0.5">Allow agent to receive non-image files (PDF, audio, video, etc.) from channels. Files are stored for 7 days and read on demand via the <code>read_attachment</code> tool. Requires a model with <code>attachments_supported</code>.</p>
+                    </div>
+                </label>
+                <div class="mt-2 flex items-center gap-2">
+                    <label for="agent-attachment-max-mb" class="text-xs text-gray-500 dark:text-gray-400">Max file size (MB):</label>
+                    <input type="number" id="agent-attachment-max-mb" min="1" max="20" value="{{ agent.attachment_max_size_mb if agent.attachment_max_size_mb is not none else 20 }}" class="w-20 p-1.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10">
+                    <span class="text-xs text-gray-400">Telegram hard-caps at 20 MB.</span>
+                </div>
+            </div>
+            <div class="mb-4">
+                <label class="flex items-center gap-3 cursor-pointer select-none">
                     {{ toggle_widget(id='agent-inject-id', checked=agent.inject_agent_id) }}
                     <div>
                         <span class="text-gray-600 dark:text-gray-300 text-sm font-medium">Inject Agent ID</span>
@@ -281,7 +336,7 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
         <div class="space-y-6">
             <!-- Advanced Settings -->
             <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 overflow-hidden">
-                <button type="button" onclick="toggleAdvanced()" class="w-full flex justify-between items-center px-6 py-4 text-sm font-semibold dark:text-gray-200 text-gray-700 hover:text-gray-900 transition-colors">
+                <button type="button" onclick="toggleAdvanced()" class="w-full flex justify-between items-center px-6 py-4 text-sm font-semibold dark:text-gray-200 text-gray-700 hover:text-gray-900 dark:hover:text-gray-50 transition-colors">
                     <span>Advanced Settings</span>
                     <span id="adv-arrow" class="text-xs transition-transform">&#9654;</span>
                 </button>
@@ -343,6 +398,16 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
                             <div>
                                 <span class="text-gray-600 dark:text-gray-300 text-sm font-medium">Agent Messaging</span>
                                 <p class="text-xs text-gray-400 mt-0.5">Allow this agent to send messages to other agents. Enables <code>send_agent_message</code>, <code>escalate_to_user</code>, and <code>resolve_agent_approval</code> tools automatically.</p>
+                            </div>
+                        </label>
+                    </div>
+
+                    <div>
+                        <label class="flex items-center gap-3 cursor-pointer select-none">
+                            {{ toggle_widget(id='agent-artifacts', checked=agent.artifacts_enabled) }}
+                            <div>
+                                <span class="text-gray-600 dark:text-gray-300 text-sm font-medium">Artifacts (Saved Files)</span>
+                                <p class="text-xs text-gray-400 mt-0.5">Allow agent to save files (reports, analysis, images, etc.) to its artifacts directory. When enabled, the agent's SYSTEM.md is updated with instructions to use the <code>save_artifact</code> tool. Files appear in the Artifacts tab.</p>
                             </div>
                         </label>
                     </div>
@@ -450,6 +515,73 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
         </div>
     </div>
 
+    <!-- Portals Tab -->
+    <div id="tab-portals" class="tab-content hidden flex-1 min-h-0 overflow-y-auto">
+        <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 p-6 max-w-3xl">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-base font-semibold text-gray-800 dark:text-gray-100">Portals</h3>
+                <button onclick="showAddPortalModal()" class="bg-indigo-500 hover:bg-indigo-600 text-white px-4 py-2 rounded-md text-sm transition-colors">+ Add Portal</button>
+            </div>
+            <p class="text-xs text-gray-400 mb-4">Virtual path mappings for file I/O tools (read_file, write_file, patch, str_replace). Portals do not work with bash or runpy.</p>
+            <div id="portals-list" class="space-y-3">
+                <!-- Portals loaded dynamically -->
+            </div>
+            <div id="portals-empty" class="hidden text-center py-8 text-gray-400 text-sm">No portals configured. Add a portal to give this agent access to files on another machine or directory via /_portal/ paths.</div>
+        </div>
+    </div>
+
+    <!-- Artifacts Tab -->
+    <div id="tab-artifacts" class="tab-content hidden flex-1 min-h-0 overflow-y-auto">
+        <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 p-6 max-w-5xl">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-base font-semibold text-gray-800 dark:text-gray-100">Artifacts</h3>
+            </div>
+
+            <!-- Search & Sort Bar -->
+            <div class="flex flex-wrap items-center gap-3 mb-4">
+                <div class="relative flex-1 min-w-[200px]">
+                    <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                    </svg>
+                    <input type="text" id="artifacts-search" placeholder="Search artifacts..." oninput="filterArtifacts()"
+                        class="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100">
+                </div>
+                <select id="artifacts-sort" onchange="loadArtifacts()"
+                    class="p-2 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100">
+                    <option value="newest">Newest</option>
+                    <option value="updated">Last Updated</option>
+                    <option value="alpha">Alphabetical A-Z</option>
+                    <option value="alpha_desc">Alphabetical Z-A</option>
+                </select>
+            </div>
+
+            <!-- Filter Chips -->
+            <div class="flex flex-wrap gap-2 mb-4" id="artifacts-filter-chips">
+                <button class="artifacts-filter-chip px-3 py-1.5 text-xs font-medium rounded-full border border-indigo-500 text-indigo-600 bg-indigo-50 dark:bg-indigo-900/20 dark:text-indigo-400" data-type="all" onclick="setArtifactFilter('all')">All</button>
+                <button class="artifacts-filter-chip px-3 py-1.5 text-xs font-medium rounded-full border border-gray-300 text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-400 dark:hover:bg-gray-700" data-type="document" onclick="setArtifactFilter('document')">Document</button>
+                <button class="artifacts-filter-chip px-3 py-1.5 text-xs font-medium rounded-full border border-gray-300 text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-400 dark:hover:bg-gray-700" data-type="text" onclick="setArtifactFilter('text')">Text</button>
+                <button class="artifacts-filter-chip px-3 py-1.5 text-xs font-medium rounded-full border border-gray-300 text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-400 dark:hover:bg-gray-700" data-type="image" onclick="setArtifactFilter('image')">Image</button>
+                <button class="artifacts-filter-chip px-3 py-1.5 text-xs font-medium rounded-full border border-gray-300 text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-400 dark:hover:bg-gray-700" data-type="sound" onclick="setArtifactFilter('sound')">Sound</button>
+                <button class="artifacts-filter-chip px-3 py-1.5 text-xs font-medium rounded-full border border-gray-300 text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-400 dark:hover:bg-gray-700" data-type="video" onclick="setArtifactFilter('video')">Video</button>
+                <button class="artifacts-filter-chip px-3 py-1.5 text-xs font-medium rounded-full border border-gray-300 text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-400 dark:hover:bg-gray-700" data-type="data" onclick="setArtifactFilter('data')">Data / Other</button>
+            </div>
+
+            <!-- Artifacts Grid -->
+            <div id="artifacts-grid" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                <!-- Artifacts loaded dynamically -->
+            </div>
+
+            <!-- Empty State -->
+            <div id="artifacts-empty" class="hidden text-center py-12 text-gray-400">
+                <svg class="w-12 h-12 mx-auto mb-3 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"></path>
+                </svg>
+                <p class="text-sm">No artifacts yet.</p>
+                <p class="text-xs mt-1">Artifacts are files that agents save during their work. When an agent produces a report, analysis, or any output, it can be saved here.</p>
+            </div>
+        </div>
+    </div>
+
     <!-- Chat Tab -->
     <div id="tab-chat" class="tab-content flex-1 min-h-0">
         <div class="flex flex-col lg:flex-row gap-4 h-full" style="min-height:0;">
@@ -522,7 +654,7 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
                     <div class="flex justify-between items-center px-4 pt-4 pb-2 flex-shrink-0">
                         <div class="flex items-center gap-2">
                             <h3 class="font-semibold text-gray-800 dark:text-gray-100">Agent State</h3>
-                            <span id="state-busy-dot" class="hidden inline-flex items-center gap-1.5 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full"><span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>Busy</span>
+                            <span id="state-busy-dot" class="hidden items-center gap-1.5 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full"><span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>Busy</span>
                         </div>
                         <button onclick="refreshAgentState()" class="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1" title="Refresh">
                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-3.5 h-3.5"><path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 0 1-9.201 2.466l-.312-.311h2.433a.75.75 0 0 0 0-1.5H4.598a.75.75 0 0 0-.75.75v3.634a.75.75 0 0 0 1.5 0v-2.033l-.312.311a7 7 0 0 0 11.712-3.138.75.75 0 0 0-1.449-.39Zm-10.625-2.85a5.5 5.5 0 0 1 9.201-2.465l.312.31H11.767a.75.75 0 0 0 0 1.5h3.634a.75.75 0 0 0 .75-.75V3.535a.75.75 0 0 0-1.5 0v2.033l-.312-.31A7 7 0 0 0 2.627 8.396a.75.75 0 0 0 1.449.39l.611.789Z" clip-rule="evenodd"/></svg>
@@ -534,11 +666,11 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
                     </div>
                 </div>
                 {% endif %}
-                <!-- Session Recap Card -->
+                <!-- Session State Card -->
                 <div id="summary-card" class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 flex flex-col flex-1 min-h-0 overflow-hidden">
                     <div class="flex justify-between items-center px-4 pt-4 pb-2 flex-shrink-0">
-                        <h3 class="font-semibold text-gray-800 dark:text-gray-100">Session Recap</h3>
-                        <button onclick="refreshSummary()" class="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1" title="Refresh">
+                        <h3 class="font-semibold text-gray-800 dark:text-gray-100">Session State</h3>
+                        <button onclick="refreshSessionState()" class="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1" title="Refresh">
                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-3.5 h-3.5"><path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 0 1-9.201 2.466l-.312-.311h2.433a.75.75 0 0 0 0-1.5H4.598a.75.75 0 0 0-.75.75v3.634a.75.75 0 0 0 1.5 0v-2.033l-.312.311a7 7 0 0 0 11.712-3.138.75.75 0 0 0-1.449-.39Zm-10.625-2.85a5.5 5.5 0 0 1 9.201-2.465l.312.31H11.767a.75.75 0 0 0 0 1.5h3.634a.75.75 0 0 0 .75-.75V3.535a.75.75 0 0 0-1.5 0v2.033l-.312-.31A7 7 0 0 0 2.627 8.396a.75.75 0 0 0 1.449.39l.611.789Z" clip-rule="evenodd"/></svg>
                             Refresh
                         </button>
@@ -558,9 +690,9 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
     <div class="absolute inset-0 bg-black/40" onclick="closeMobileChatSummary()"></div>
     <div class="absolute right-0 top-0 bottom-0 w-[85%] max-w-[340px] bg-white dark:bg-gray-800 flex flex-col shadow-xl">
         <div class="flex justify-between items-center px-4 py-3 border-b border-gray-200">
-            <h4 class="font-semibold text-gray-800 dark:text-gray-100">Session Recap</h4>
+            <h4 class="font-semibold text-gray-800 dark:text-gray-100">Session State</h4>
             <div class="flex items-center gap-3">
-                <button onclick="refreshSummary()" class="text-xs text-gray-400 hover:text-gray-600" title="Refresh">
+                <button onclick="refreshSessionState()" class="text-xs text-gray-400 hover:text-gray-600" title="Refresh">
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 0 1-9.201 2.466l-.312-.311h2.433a.75.75 0 0 0 0-1.5H4.598a.75.75 0 0 0-.75.75v3.634a.75.75 0 0 0 1.5 0v-2.033l-.312.311a7 7 0 0 0 11.712-3.138.75.75 0 0 0-1.449-.39Zm-10.625-2.85a5.5 5.5 0 0 1 9.201-2.465l.312.31H11.767a.75.75 0 0 0 0 1.5h3.634a.75.75 0 0 0 .75-.75V3.535a.75.75 0 0 0-1.5 0v2.033l-.312-.31A7 7 0 0 0 2.627 8.396a.75.75 0 0 0 1.449.39l.611.789Z" clip-rule="evenodd"/></svg>
                 </button>
                 <button onclick="closeMobileChatSummary()" class="text-gray-400 hover:text-gray-600">
@@ -575,7 +707,7 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
                 <div class="flex justify-between items-center px-4 py-2 border-b border-gray-100">
                     <div class="flex items-center gap-2">
                         <h5 class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Agent State</h5>
-                        <span id="mobile-state-busy-dot" class="hidden inline-flex items-center gap-1.5 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full"><span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>Busy</span>
+                        <span id="mobile-state-busy-dot" class="hidden items-center gap-1.5 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full"><span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>Busy</span>
                     </div>
                     <button onclick="refreshAgentState()" class="text-xs text-gray-400 hover:text-gray-600" title="Refresh">
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-3.5 h-3.5"><path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 0 1-9.201 2.466l-.312-.311h2.433a.75.75 0 0 0 0-1.5H4.598a.75.75 0 0 0-.75.75v3.634a.75.75 0 0 0 1.5 0v-2.033l-.312.311a7 7 0 0 0 11.712-3.138.75.75 0 0 0-1.449-.39Zm-10.625-2.85a5.5 5.5 0 0 1 9.201-2.465l.312.31H11.767a.75.75 0 0 0 0 1.5h3.634a.75.75 0 0 0 .75-.75V3.535a.75.75 0 0 0-1.5 0v2.033l-.312-.31A7 7 0 0 0 2.627 8.396a.75.75 0 0 0 1.449.39l.611.789Z" clip-rule="evenodd"/></svg>
@@ -586,10 +718,10 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
                 </div>
             </div>
             {% endif %}
-            <!-- Mobile Session Recap Card -->
+            <!-- Mobile Session State Card -->
             <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600">
                 <div class="flex justify-between items-center px-4 py-2 border-b border-gray-100">
-                    <h5 class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Session Recap</h5>
+                    <h5 class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Session State</h5>
                 </div>
                 <div id="mobile-summary-content" class="p-4">
                     <p class="text-sm text-gray-400 italic">No summary yet. Start chatting to generate one.</p>
@@ -629,7 +761,7 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
                 <span class="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded font-mono" id="tool-detail-id"></span>
                 <span id="tool-detail-skill" class="hidden text-xs bg-indigo-50 text-indigo-500 px-2 py-0.5 rounded"></span>
             </div>
-            <button onclick="document.getElementById('tool-detail-modal').classList.add('hidden')" class="bg-transparent border-none text-gray-400 text-2xl cursor-pointer hover:text-gray-800">&times;</button>
+            <button onclick="document.getElementById('tool-detail-modal').classList.add('hidden')" class="bg-transparent border-none text-gray-400 text-2xl cursor-pointer hover:text-gray-800 dark:hover:text-gray-200">&times;</button>
         </div>
         <div class="p-5 flex-1 overflow-y-auto space-y-4">
             <!-- Description -->
@@ -645,7 +777,7 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
                 <!-- Tab bar -->
                 <div class="flex border-b border-gray-200 mt-2">
                     <button id="tool-tab-btn-prod" onclick="switchToolTab('prod')" class="px-4 py-2 text-sm font-medium border-b-2 border-indigo-500 text-indigo-600">Prod</button>
-                    <button id="tool-tab-btn-mock" onclick="switchToolTab('mock')" class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Mock</button>
+                    <button id="tool-tab-btn-mock" onclick="switchToolTab('mock')" class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-200">Mock</button>
                 </div>
                 <!-- Prod tab -->
                 <div id="tool-tab-prod" class="pt-3">
@@ -693,7 +825,9 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
 <div id="compiled-prompt-modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-50">
     <div class="bg-white dark:bg-gray-800 rounded-xl w-[90%] max-w-[800px] shadow-xl flex flex-col relative" style="max-height: 85vh;">
         <div class="flex justify-between items-center p-5 border-b border-gray-200">
-            <h3 class="text-gray-800 font-semibold dark:text-gray-100">Compiled Context</h3>
+            <h3 class="text-gray-800 font-semibold dark:text-gray-100">Compiled Context
+                <span id="compiled-token-badge" class="hidden text-[10px] font-medium px-2 py-0.5 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-500/30 dark:text-indigo-200 ml-2 align-middle"></span>
+            </h3>
             <button onclick="document.getElementById('compiled-prompt-modal').classList.add('hidden')" class="bg-transparent border-none text-gray-400 text-2xl cursor-pointer hover:text-gray-800">&times;</button>
         </div>
         <!-- Loading Spinner Overlay -->
@@ -714,14 +848,35 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
         <!-- System Prompt Tab -->
         <div id="prompt-tab-prompt" class="p-5 flex-1 overflow-y-auto space-y-4">
             <div>
-                <h4 class="text-sm font-semibold text-gray-700 mb-2">System Prompt</h4>
+                <h4 class="text-sm font-semibold text-gray-700 mb-2 cursor-pointer flex items-center gap-1" onclick="document.getElementById('compiled-prompt-text').classList.toggle('hidden'); this.querySelector('.chevron').classList.toggle('rotated')">
+                    System Prompt
+                    <span class="chevron rotated text-gray-400 text-[10px]">&#9656;</span>
+                    <span id="compiled-sp-tokens" class="text-xs font-normal text-gray-400 ml-1"></span>
+                </h4>
                 <pre id="compiled-prompt-text" class="bg-gray-50 border border-gray-200 rounded-md p-4 text-xs text-gray-700 font-mono whitespace-pre-wrap overflow-x-auto"></pre>
+            </div>
+            <div id="compiled-memories-section" class="hidden">
+                <h4 class="text-sm font-semibold text-gray-700 mb-2 cursor-pointer flex items-center gap-1" onclick="document.getElementById('compiled-memories-text').classList.toggle('hidden'); this.querySelector('.chevron').classList.toggle('rotated')">
+                    Memory
+                    <span class="chevron text-gray-400 text-[10px]">&#9656;</span>
+                    <span id="compiled-mem-tokens" class="text-xs font-normal text-gray-400 ml-1"></span>
+                </h4>
+                <pre id="compiled-memories-text" class="hidden bg-purple-50 border border-purple-200 rounded-md p-4 text-xs text-gray-700 font-mono whitespace-pre-wrap overflow-x-auto"></pre>
+            </div>
+            <div id="compiled-summary-section" class="hidden">
+                <h4 class="text-sm font-semibold text-gray-700 mb-2 cursor-pointer flex items-center gap-1" onclick="document.getElementById('compiled-summary-text').classList.toggle('hidden'); this.querySelector('.chevron').classList.toggle('rotated')">
+                    Prior Conversation Summary
+                    <span class="chevron text-gray-400 text-[10px]">&#9656;</span>
+                    <span id="compiled-sum-tokens" class="text-xs font-normal text-gray-400 ml-1"></span>
+                </h4>
+                <pre id="compiled-summary-text" class="hidden bg-amber-50 border border-amber-200 rounded-md p-4 text-xs text-gray-700 font-mono whitespace-pre-wrap overflow-x-auto"></pre>
             </div>
             <div>
                 <h4 class="text-sm font-semibold text-gray-700 mb-2 cursor-pointer flex items-center gap-1" onclick="document.getElementById('compiled-tools-json').classList.toggle('hidden'); this.querySelector('.chevron').classList.toggle('rotated')">
                     Tool Definitions
                     <span class="chevron text-gray-400 text-[10px] transition-transform">&#9656;</span>
                     <span id="compiled-tools-count" class="text-xs font-normal text-gray-400 ml-1"></span>
+                    <span id="compiled-tool-tokens" class="text-xs font-normal text-gray-400 ml-1"></span>
                 </h4>
                 <pre id="compiled-tools-json" class="hidden bg-gray-50 border border-gray-200 rounded-md p-4 text-xs text-gray-700 font-mono whitespace-pre-wrap overflow-x-auto" style="max-height: 400px;"></pre>
             </div>
@@ -783,6 +938,97 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
             <div class="flex gap-3 justify-end">
                 <button onclick="closeChannelModal()" class="px-4 py-2 border border-gray-300 rounded-md text-sm text-gray-600 hover:bg-gray-600 dark:text-gray-50">Cancel</button>
                 <button onclick="addChannel()" class="px-4 py-2 bg-indigo-500 text-white rounded-md text-sm hover:bg-indigo-600">Add</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Portal Modal -->
+<div id="portal-modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+    <div class="bg-white dark:bg-gray-800 rounded-xl w-[90%] max-w-[500px] shadow-xl">
+        <div class="flex justify-between items-center p-5 border-b border-gray-200">
+            <h3 class="text-gray-800 font-semibold dark:text-gray-100" id="portal-modal-title">Add Portal</h3>
+            <button onclick="closePortalModal()" class="bg-transparent border-none text-gray-400 text-2xl cursor-pointer hover:text-gray-800">&times;</button>
+        </div>
+        <div class="p-5">
+            <input type="hidden" id="portal-id" value="">
+            <div class="mb-4">
+                <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Name</label>
+                <input type="text" id="portal-name" placeholder="e.g., Server B Data" class="w-full p-2.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100">
+            </div>
+            <div class="mb-4">
+                <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Virtual Path</label>
+                <div class="flex items-center">
+                    <span class="px-2 py-2.5 border border-r-0 border-gray-300 rounded-l-md bg-gray-50 text-gray-500 text-sm">/_portal/</span>
+                    <input type="text" id="portal-virtual-path" placeholder="data_b" class="flex-1 p-2.5 border border-gray-300 rounded-r-md text-sm font-mono focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100">
+                </div>
+                <p class="text-xs text-gray-400 mt-1">The virtual path prefix agents use. E.g., "data_b" → /_portal/data_b/...</p>
+            </div>
+            <div class="mb-4">
+                <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Backend Type</label>
+                <select id="portal-backend-type" class="w-full p-2.5 border border-gray-300 rounded-md text-sm" onchange="updatePortalConfigFields()">
+                    <option value="local">Local (host filesystem)</option>
+                    <option value="ssh">SSH (remote server)</option>
+                    <option value="evonet">Evonet (tunnel-connected machine)</option>
+                </select>
+            </div>
+            <!-- Workplace picker (for SSH and evonet) -->
+            <div id="portal-workplace-picker" class="mb-4 hidden">
+                <label class="flex items-center gap-2 cursor-pointer select-none mb-2">
+                    <input type="checkbox" id="portal-use-workplace" onchange="updatePortalConfigFields()" class="rounded border-gray-300 text-indigo-500 focus:ring-indigo-400">
+                    <span class="text-sm text-gray-500">Use existing workplace</span>
+                </label>
+                <select id="portal-workplace-select" class="w-full p-2.5 border border-gray-300 rounded-md text-sm hidden">
+                    <option value="">-- Select workplace --</option>
+                </select>
+                <p class="text-xs text-gray-400 mt-1">Reuse an existing workplace connection instead of creating a new one.</p>
+            </div>
+            <!-- SSH config fields -->
+            <div id="portal-ssh-config" class="hidden space-y-3">
+                <div>
+                    <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Host</label>
+                    <input type="text" id="portal-ssh-host" placeholder="192.168.1.100" class="w-full p-2.5 border border-gray-300 rounded-md text-sm font-mono focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100">
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Port</label>
+                        <input type="number" id="portal-ssh-port" value="22" class="w-full p-2.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100">
+                    </div>
+                    <div>
+                        <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Username</label>
+                        <input type="text" id="portal-ssh-username" placeholder="root" class="w-full p-2.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100">
+                    </div>
+                </div>
+                <div>
+                    <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Auth Type</label>
+                    <select id="portal-ssh-auth-type" class="w-full p-2.5 border border-gray-300 rounded-md text-sm" onchange="updatePortalConfigFields()">
+                        <option value="key">SSH Key</option>
+                        <option value="password">Password</option>
+                    </select>
+                </div>
+                <div id="portal-ssh-key-fields">
+                    <div>
+                        <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Key Path</label>
+                        <input type="text" id="portal-ssh-key-path" placeholder="~/.ssh/id_rsa" class="w-full p-2.5 border border-gray-300 rounded-md text-sm font-mono focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100">
+                    </div>
+                    <div class="mt-3">
+                        <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Passphrase (optional)</label>
+                        <input type="password" id="portal-ssh-passphrase" placeholder="Key passphrase" class="w-full p-2.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100">
+                    </div>
+                </div>
+                <div id="portal-ssh-password-field" class="hidden">
+                    <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Password</label>
+                    <input type="password" id="portal-ssh-password" placeholder="SSH password" class="w-full p-2.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100">
+                </div>
+            </div>
+            <div class="mb-4 mt-4">
+                <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Real Path</label>
+                <input type="text" id="portal-real-path" placeholder="/home/data_b" class="w-full p-2.5 border border-gray-300 rounded-md text-sm font-mono focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100">
+                <p class="text-xs text-gray-400 mt-1">The actual filesystem path on the target machine.</p>
+            </div>
+            <div class="flex gap-3 justify-end">
+                <button onclick="closePortalModal()" class="px-4 py-2 border border-gray-300 rounded-md text-sm text-gray-600 hover:bg-gray-600 dark:text-gray-50">Cancel</button>
+                <button onclick="savePortal()" class="px-4 py-2 bg-indigo-500 text-white rounded-md text-sm hover:bg-indigo-600">Save</button>
             </div>
         </div>
     </div>
@@ -878,7 +1124,7 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
     </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/chat-ui.js') }}?v=41"></script>
+<script src="{{ url_for('static', filename='js/chat-ui.js') }}?v=42"></script>
 <script src="{{ url_for('static', filename='js/agent-state.js') }}?v=3"></script>
 <script>
 function showToast(message, type = 'success') {
@@ -902,9 +1148,64 @@ function showToast(message, type = 'success') {
 <script>
 const AGENT_ID = '{{ agent.id }}';
 const ENABLE_AGENT_STATE = {{ 'true' if agent.enable_agent_state else 'false' }};
+const ORIGINAL_WORKSPACE = '{{ agent.workspace or '' }}';
 let currentEditFile = null;
 let agentTools = [];
 let chatLoaded = false;
+
+// --- Chat input draft persistence (localStorage) ---
+(function() {
+    const DRAFT_KEY = 'chat_draft_' + AGENT_ID;
+
+    function saveDraft() {
+        const input = document.getElementById('chat-input');
+        if (!input) return;
+        const val = input.value;
+        if (val.trim()) {
+            try { localStorage.setItem(DRAFT_KEY, val); } catch(e) { /* quota exceeded, ignore */ }
+        } else {
+            try { localStorage.removeItem(DRAFT_KEY); } catch(e) {}
+        }
+    }
+
+    function restoreDraft() {
+        const input = document.getElementById('chat-input');
+        if (!input) return;
+        try {
+            const saved = localStorage.getItem(DRAFT_KEY);
+            if (saved && saved.trim()) {
+                input.value = saved;
+                // Trigger height auto-resize
+                input.style.height = 'auto';
+                input.style.height = Math.min(input.scrollHeight, 150) + 'px';
+                input.style.overflowY = input.scrollHeight > 150 ? 'auto' : 'hidden';
+            }
+        } catch(e) { /* ignore */ }
+    }
+
+    function clearDraft() {
+        try { localStorage.removeItem(DRAFT_KEY); } catch(e) {}
+    }
+
+    // Expose clearDraft so sendChat() can call it
+    window._clearChatDraft = clearDraft;
+
+    // Save on input
+    document.addEventListener('DOMContentLoaded', function() {
+        const input = document.getElementById('chat-input');
+        if (input) {
+            input.addEventListener('input', saveDraft);
+            // Also save on blur for extra safety
+            input.addEventListener('blur', saveDraft);
+        }
+    });
+
+    // Restore on load
+    $(function() { restoreDraft(); });
+
+    // Safety net: save on page unload
+    $(window).on('beforeunload', saveDraft);
+})();
 
 // Avatar upload handler
 document.addEventListener('DOMContentLoaded', function() {
@@ -1024,6 +1325,13 @@ $(document).on('keydown', function (e) {
     if (e.key === 'Escape' && _chatFullscreenActive) toggleChatFullscreenMode();
 });
 
+// Click-outside to close compiled-prompt-modal
+$(document).on('click', '#compiled-prompt-modal', function (e) {
+    if (e.target === e.currentTarget) {
+        $(this).addClass('hidden');
+    }
+});
+
 function showTab(name) {
     $('.tab-content').addClass('hidden');
     $('.tab-btn').removeClass('border-indigo-500 text-indigo-600')
@@ -1036,7 +1344,9 @@ function showTab(name) {
     if (name === 'tools') loadTools();
     if (name === 'skills') loadSkills();
     if (name === 'channels') loadChannels();
-    if (name === 'chat' && !chatLoaded) { loadChatHistory(); refreshSummary(); refreshAgentState(); }
+    if (name === 'portals') loadPortals();
+    if (name === 'artifacts') loadArtifacts();
+    if (name === 'chat' && !chatLoaded) { loadChatHistory(); refreshSessionState(); refreshAgentState(); }
 
     if (name === 'chat') {
         enterChatFullscreen();
@@ -1192,22 +1502,27 @@ function setSaveLoading(btnId, loading) {
 async function saveGeneral() {
     const btnId = 'saveGeneralBtn';
     setSaveLoading(btnId, true);
+    let workspaceChanged = false;
     try {
     const homeSel = document.getElementById('agent-workplace-id');
     const selectedOpt = homeSel ? homeSel.options[homeSel.selectedIndex] : null;
     const homeType = selectedOpt ? selectedOpt.dataset.type : '';
-    const isRemoteOrCloud = (homeType === 'remote' || homeType === 'cloud');
+    const isRemoteOrTunnel = (homeType === 'remote' || homeType === 'tunnel');
+    const newWorkspace = document.getElementById('agent-workspace').value || null;
+    workspaceChanged = (newWorkspace || null) !== (ORIGINAL_WORKSPACE || null);
     const res = await fetch(`/api/agents/${AGENT_ID}`, {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
             name: document.getElementById('agent-name').value,
             description: document.getElementById('agent-desc').value,
-            workspace: document.getElementById('agent-workspace').value || null,
+            workspace: newWorkspace,
             workplace_id: homeSel ? homeSel.value || null : null,
             system_prompt: document.getElementById('agent-system-prompt').value,
             vision_enabled: document.getElementById('agent-vision').checked ? 1 : 0,
-            sandbox_enabled: isRemoteOrCloud ? 0 : (document.getElementById('agent-sandbox').checked ? 1 : 0),
+            attachments_enabled: document.getElementById('agent-attachments').checked ? 1 : 0,
+            attachment_max_size_mb: Math.min(20, Math.max(1, parseInt(document.getElementById('agent-attachment-max-mb').value) || 20)),
+            sandbox_enabled: isRemoteOrTunnel ? 0 : (document.getElementById('agent-sandbox').checked ? 1 : 0),
             safety_checker_enabled: document.getElementById('agent-safety-checker').checked ? 1 : 0,
             inject_agent_id: document.getElementById('agent-inject-id').checked ? 1 : 0,
             inject_datetime: document.getElementById('agent-inject-datetime').checked ? 1 : 0,
@@ -1217,15 +1532,20 @@ async function saveGeneral() {
     if (!data.success) { showToast("Failed to save settings.", "error"); return; }
 
     const selectedModelId = document.getElementById('agent-model-select').value || null;
+    const selectedFallbackModelId = document.getElementById('agent-fallback-model-select').value || null;
     await fetch(`/api/agents/${AGENT_ID}/model`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ model_id: selectedModelId })
+        body: JSON.stringify({ model_id: selectedModelId, fallback_model_id: selectedFallbackModelId })
     });
 
+    if (workspaceChanged) {
+        location.reload();
+        return;
+    }
     showToast("Settings saved successfully!", "success");
     } finally {
-        setSaveLoading(btnId, false);
+        if (!workspaceChanged) setSaveLoading(btnId, false);
     }
 }
 
@@ -1246,6 +1566,7 @@ async function saveAdvanced() {
             disable_parallel_tool_execution: document.getElementById('agent-parallel-exec').checked ? 1 : 0,
             disable_turn_prefetch: document.getElementById('agent-prefetch').checked ? 1 : 0,
             agent_messaging_enabled: document.getElementById('agent-messaging-enabled').checked ? 1 : 0,
+            artifacts_enabled: document.getElementById('agent-artifacts').checked ? 1 : 0,
         })
     });
     const data = await res.json();
@@ -1399,29 +1720,29 @@ function renderToolsList() {
 
     // Warning banner + rows for orphaned tools
     if (orphaned.length > 0) {
-        html += `<div class="tool-row flex items-start gap-2.5 p-3 bg-amber-50 border border-amber-200 rounded-md" data-assigned="true" data-builtin="false" data-tool-id="">
+        html += `<div class="tool-row flex items-start gap-2.5 p-3 bg-amber-50 dark:bg-amber-900/40 border border-amber-200 dark:border-amber-700 rounded-md" data-assigned="true" data-builtin="false" data-tool-id="">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5">
                 <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495ZM10 6a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0v-3.5A.75.75 0 0 1 10 6Zm0 9a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clip-rule="evenodd"/>
             </svg>
             <div>
-                <p class="text-sm font-medium text-amber-800">${orphaned.length} tool(s) missing</p>
-                <p class="text-xs text-amber-600 mt-0.5">The skill providing these tools may have been uninstalled. Remove them or reinstall the skill.</p>
+                <p class="text-sm font-medium text-amber-800 dark:text-amber-200">${orphaned.length} tool(s) missing</p>
+                <p class="text-xs text-amber-600 dark:text-amber-300 mt-0.5">The skill providing these tools may have been uninstalled. Remove them or reinstall the skill.</p>
             </div>
         </div>`;
         html += orphaned.map(id => `
-        <div class="tool-row flex items-center justify-between p-3 bg-amber-50/60 dark:bg-amber-700 rounded-md border border-amber-200"
+        <div class="tool-row flex items-center justify-between p-3 bg-amber-50/60 dark:bg-amber-900/40 rounded-md border border-amber-200 dark:border-amber-700/50"
              data-assigned="true" data-builtin="false" data-tool-id="${escapeHtml(id)}">
             <div class="min-w-0 flex-1 flex items-center gap-2.5">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5 text-amber-500 flex-shrink-0">
                     <path fill-rule="evenodd" d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Zm-8-5a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0v-4.5A.75.75 0 0 1 10 5Zm0 10a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clip-rule="evenodd"/>
                 </svg>
                 <div>
-                    <span class="text-sm font-medium text-amber-700 font-mono">${escapeHtml(id)}</span>
-                    <p class="text-xs text-amber-500">Missing — skill uninstalled</p>
+                    <span class="text-sm font-medium text-amber-700 dark:text-amber-200 font-mono">${escapeHtml(id)}</span>
+                    <p class="text-xs text-amber-500 dark:text-amber-300/70">Missing — skill uninstalled</p>
                 </div>
             </div>
             <button onclick="event.stopPropagation(); removeOrphan('${escapeHtml(id)}')" title="Remove"
-                    class="ml-2 p-1.5 rounded text-amber-400 hover:text-red-500 hover:bg-red-50 transition-colors">
+                    class="ml-2 p-1.5 rounded text-amber-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z"/></svg>
             </button>
         </div>`).join('');
@@ -1433,7 +1754,7 @@ function renderToolsList() {
         const safeId = escapeHtml(t.id);
         return `
         <div class="tool-row flex items-center justify-between p-3 dark:bg-gray-800 dark:border-gray-600 rounded-md border transition-colors cursor-pointer
-                    ${isAsgn ? 'bg-gray-50 border-gray-200 hover:bg-gray-100' : 'bg-white border-gray-100 hover:bg-gray-50'}"
+                    ${isAsgn ? 'bg-gray-50 border-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700' : 'bg-white border-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700'}"
              data-assigned="${isAsgn && !isBuiltin}"
              data-builtin="${isBuiltin}"
              data-tool-id="${safeId}"
@@ -2308,6 +2629,7 @@ async function toggleChannelMode(enabled) {
 
 // ==================== Chat ====================
 let lastChatTs = 0;  // epoch-ms cursor for JSONL-based polling
+let lastTurnEndTs = 0;  // ts of last turn_end rendered from chatlog history
 let _chatSessionId = null;  // cached session_id for this user
 
 async function _getChatSessionId() {
@@ -2366,6 +2688,7 @@ function renderEntries(entries, { persistent = false } = {}) {
             chatUI.appendMessage('system', entry.content, {metadata: entry.metadata});
         } else if (type === 'turn_end') {
             if (thinkingId) { chatUI.finalizeThinkingBubble(thinkingId, entry.thinking_duration); thinkingId = null; }
+            if (entry.ts && entry.ts > lastTurnEndTs) lastTurnEndTs = entry.ts;
         }
         // turn_begin, pending: no rendering needed for history
     }
@@ -2442,6 +2765,15 @@ async function restoreActiveReasoning() {
         const replayEvents = cutIdx >= 0 ? events.slice(cutIdx + 1) : events;
         if (!replayEvents.length) return;
 
+        // Guard: if the in-progress turn started before the last turn_end rendered
+        // from chatlog history, that turn was already fully finalized — skip to avoid
+        // creating a duplicate thinking bubble above completed messages.
+        const firstReplayEvt = replayEvents.find(ev => ev.event === 'turn_begin');
+        if (firstReplayEvt && firstReplayEvt.data && firstReplayEvt.data.ts &&
+                firstReplayEvt.data.ts < lastTurnEndTs) {
+            return;
+        }
+
         // Stop the idle poll before creating the live bubble. The idle poll may
         // have fired during our async awaits (before _currentTurn was set) and
         // created a stale _pollThinkingId that would duplicate the live bubble.
@@ -2500,7 +2832,13 @@ function updateBusyBadge(busy) {
     const mobileDot = document.getElementById('mobile-state-busy-dot');
     [dot, mobileDot].forEach(el => {
         if (!el) return;
-        busy ? el.classList.remove('hidden') : el.classList.add('hidden');
+        if (busy) {
+            el.classList.remove('hidden');
+            el.classList.add('inline-flex');
+        } else {
+            el.classList.add('hidden');
+            el.classList.remove('inline-flex');
+        }
     });
 }
 
@@ -2613,6 +2951,7 @@ async function sendChat() {
     if (!msg) return;
     input.value = '';
     input.style.height = 'auto';
+    window._clearChatDraft();
     chatUI.appendMessage('user', msg);
     // Capture the user message wrapper for anchoring the thinking bubble
     const container = document.getElementById('chat-messages');
@@ -2638,14 +2977,18 @@ async function sendChat() {
             if (!data.success) {
                 chatUI.appendMessage('error', 'Error: ' + (data.error || 'Unknown error'));
             } else {
-                chatUI.appendMessage('assistant', data.response);
+                const $resp = chatUI.appendMessage('assistant', data.response);
+                // Reposition the slash command response immediately after the user
+                // message so it doesn't appear below an active thinking bubble that
+                // turn_split may have inserted in the meantime.
+                if (userMsgEl && $resp && $resp.length) $(userMsgEl).after($resp);
                 await syncLastChatTs();
             }
         } catch(e) {
             chatUI.appendMessage('error', 'Network error: ' + e.message);
         }
         setChatBusy(false);
-        setTimeout(refreshSummary, 3000);
+        setTimeout(refreshSessionState, 0);
         setTimeout(refreshAgentState, 1000);
         return;
     }
@@ -2715,6 +3058,13 @@ async function sendChat() {
             thinkingId = null; if (_currentTurn) _currentTurn.thinkingId = null;
             chatUI.closeStream();
             await syncLastChatTs();
+        } else if (data.slash_command) {
+            // Slash command response — no LLM involved, remove the eager thinking bubble
+            chatUI.removeThinkingIndicator(thinkingId);
+            thinkingId = null; if (_currentTurn) _currentTurn.thinkingId = null;
+            chatUI.closeStream();
+            chatUI.appendMessage('assistant', data.response);
+            await syncLastChatTs();
         } else {
             // Non-buffered success: agent responded immediately.
             // Thinking bubble was already created eagerly; populate it and close SSE.
@@ -2750,8 +3100,8 @@ async function sendChat() {
         chatUI.appendMessage('error', 'Network error: ' + e.message);
     }
     setChatBusy(false);
-    // Refresh summary and agent state after background summarization completes (~2-3s delay)
-    setTimeout(refreshSummary, 3000);
+    // Refresh summary and agent state after response completes
+    setTimeout(refreshSessionState, 0);
     setTimeout(refreshAgentState, 1000);
 }
 
@@ -2855,7 +3205,7 @@ function pollForResponse(existingThinkingId) {
                 clearInterval(_currentTurn.pollTimer);
                 _currentTurn.pollTimer = null;
                 setChatBusy(false);
-                setTimeout(refreshSummary, 3000);
+                setTimeout(refreshSessionState, 0);
                 setTimeout(refreshAgentState, 1000);
             }
         } catch(e) { console.error('[pollForResponse]', e); }
@@ -2900,6 +3250,41 @@ async function showCompiledPrompt() {
     document.getElementById('compiled-tools-count').textContent = `(${tools.length} tools)`;
     document.getElementById('compiled-tools-json').textContent = JSON.stringify(tools, null, 2);
 
+    // Token estimates
+    const tokens = data.tokens || {};
+    const spTokens = tokens.system_prompt || 0;
+    const toolTokens = tokens.tool_definitions || 0;
+    const memTokens = tokens.memories || 0;
+    const sumTokens = tokens.summary || 0;
+    const totalTokens = tokens.total || (spTokens + toolTokens + memTokens + sumTokens);
+    document.getElementById('compiled-sp-tokens').textContent = `\u2014 ~${spTokens.toLocaleString()} tokens`;
+    document.getElementById('compiled-tool-tokens').textContent = `\u2014 ~${toolTokens.toLocaleString()} tokens`;
+    document.getElementById('compiled-mem-tokens').textContent = `\u2014 ~${memTokens.toLocaleString()} tokens`;
+    document.getElementById('compiled-sum-tokens').textContent = `\u2014 ~${sumTokens.toLocaleString()} tokens`;
+    const tokenBadge = document.getElementById('compiled-token-badge');
+    tokenBadge.textContent = `~${totalTokens.toLocaleString()} tokens`;
+    tokenBadge.classList.remove('hidden');
+
+    // Long-term Memory section
+    const memSection = document.getElementById('compiled-memories-section');
+    const memText = document.getElementById('compiled-memories-text');
+    if (data.memories) {
+        memSection.classList.remove('hidden');
+        memText.textContent = data.memories;
+    } else {
+        memSection.classList.add('hidden');
+    }
+
+    // Prior Conversation Summary section
+    const sumSection = document.getElementById('compiled-summary-section');
+    const sumText = document.getElementById('compiled-summary-text');
+    if (data.summary) {
+        sumSection.classList.remove('hidden');
+        sumText.textContent = data.summary;
+    } else {
+        sumSection.classList.add('hidden');
+    }
+
     // LLM Request tab
     const badge = document.getElementById('llm-preview-badge');
     badge.classList.toggle('hidden', !llmData.has_summary);
@@ -2935,7 +3320,7 @@ async function showCompiledPrompt() {
         }).join('');
     }
 
-    // Hide spinner and switch to prompt tab
+    // Hide spinner and switch to System Prompt tab by default
     spinner.classList.add('hidden');
     switchPromptTab('prompt');
 }
@@ -2974,16 +3359,53 @@ function closeMobileChatSummary() {
     document.getElementById('mobile-chat-summary-overlay').classList.add('hidden');
 }
 
-async function refreshSummary() {
+async function refreshSessionState() {
     try {
-        const res = await fetch(`/api/agents/${AGENT_ID}/chat/summary?user_id=web_test`);
-        const data = await res.json();
+        // Fetch both session summary and agent state in parallel
+        const sid = _chatSessionId ? `&session_id=${encodeURIComponent(_chatSessionId)}` : '';
+        const [sumRes, stateRes] = await Promise.all([
+            fetch(`/api/agents/${AGENT_ID}/chat/summary?user_id=web_test${sid}`),
+            fetch(`/api/agents/${AGENT_ID}/chat/state?user_id=web_test${sid}`)
+        ]);
+        const data = await sumRes.json();
+        const stateData = stateRes.ok ? await stateRes.json() : {};
+
+        // Build mode badge + plan file + tasks header from agent state
+        let headerHtml = '';
+        if (stateData.mode) {
+            const modeColor = stateData.mode === 'execute' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700';
+            headerHtml += `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${modeColor}">${esc(stateData.mode)}</span> `;
+        }
+        if (stateData.plan_file) {
+            headerHtml += `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300 ml-1">📋 ${esc(stateData.plan_file)}</span> `;
+        }
+        if (stateData.tasks && stateData.tasks.length > 0) {
+            const icons = {pending: '\u2610', in_progress: '\u27f3', done: '\u2713'};
+            const iconColors = {pending: 'text-gray-400', in_progress: 'text-amber-500', done: 'text-green-500'};
+            headerHtml += '<div class="mt-2"><div class="text-gray-500 dark:text-gray-400 font-medium mb-1 text-xs uppercase tracking-wide">Tasks</div><ul class="space-y-0.5">';
+            for (const t of stateData.tasks) {
+                const icon = icons[t.status] || '\u2610';
+                const color = iconColors[t.status] || 'text-gray-400';
+                const textClass = t.status === 'done' ? 'line-through text-gray-400 dark:text-gray-500' : 'text-gray-700 dark:text-gray-200';
+                headerHtml += `<li class="flex items-start gap-1.5"><span class="${color} text-xs mt-0.5">${icon}</span><span class="${textClass} text-xs">${marked.parseInline(t.text)}</span></li>`;
+            }
+            headerHtml += '</ul></div>';
+        }
+
+        // Build skill badges from agent state
+        const skills = Array.isArray(stateData.loaded_skills) ? stateData.loaded_skills : [];
+        const skBadges = _buildSkillBadges(skills);
+        if (skBadges.hasBadges) {
+            headerHtml += '<div class="mt-2 pt-2 border-t border-gray-100 dark:border-gray-700"><div class="text-gray-500 dark:text-gray-400 font-medium mb-1 text-xs uppercase tracking-wide">📜 ' + skBadges.count + ' Skills:</div><div class="flex flex-wrap gap-1">' + skBadges.html + '</div></div>';
+        }
+
         const content = document.getElementById('summary-content');
         const meta = document.getElementById('summary-meta');
         const mobileContent = document.getElementById('mobile-summary-content');
         const mobileMeta = document.getElementById('mobile-summary-meta');
         if (data.summary) {
-            const html = '<div class="recap-prose">' + marked.parse(data.summary) + '</div>';
+            const html = (headerHtml ? `<div class="mb-3 pb-3 border-b border-gray-100 dark:border-gray-700">${headerHtml}</div>` : '') +
+                '<div class="recap-prose">' + marked.parse(data.summary) + '</div>';
             const metaText = `${data.message_count} messages summarized` + (data.updated_at ? ` \u00b7 ${data.updated_at}` : '');
             content.innerHTML = html;
             meta.textContent = metaText;
@@ -2991,8 +3413,16 @@ async function refreshSummary() {
             mobileContent.innerHTML = html;
             mobileMeta.textContent = metaText;
             mobileMeta.classList.remove('hidden');
+        } else if (headerHtml) {
+            // Show state-only card when no summary yet
+            content.innerHTML = `<div>${headerHtml}</div>`;
+            meta.textContent = '';
+            meta.classList.remove('hidden');
+            mobileContent.innerHTML = `<div>${headerHtml}</div>`;
+            mobileMeta.textContent = '';
+            mobileMeta.classList.remove('hidden');
         } else {
-            const empty = '<p class="text-sm text-gray-400 italic">No summary yet. Start chatting to generate one.</p>';
+            const empty = '<p class="text-sm text-gray-400 italic">No state yet. Start chatting to generate one.</p>';
             content.innerHTML = empty;
             meta.classList.add('hidden');
             mobileContent.innerHTML = empty;
@@ -3003,11 +3433,12 @@ async function refreshSummary() {
 
 async function refreshAgentState() {
     if (!ENABLE_AGENT_STATE) return;
-    renderAgentState(AGENT_ID, 'web_test', ['agent-state-content', 'mobile-agent-state-content']);
+    renderAgentState(AGENT_ID, 'web_test', ['agent-state-content', 'mobile-agent-state-content'], _chatSessionId);
 }
 
 document.addEventListener('evonic:agent-state-changed', function() {
     refreshAgentState();
+    refreshSessionState();
 });
 
 // ==================== Model Selector ====================
@@ -3020,16 +3451,25 @@ async function loadAgentModelSelector() {
         const modelsData = await modelsRes.json();
         const agentModelData = await agentModelRes.json();
         const currentModelId = agentModelData.default_model_id || '';
+        const currentFallbackModelId = agentModelData.fallback_model_id || '';
 
         const sel = document.getElementById('agent-model-select');
+        const fbSel = document.getElementById('agent-fallback-model-select');
         (modelsData.models || []).forEach(m => {
             const opt = document.createElement('option');
             opt.value = m.id;
             opt.textContent = `${m.name} (${m.model_name})`;
             if (m.id === currentModelId) opt.selected = true;
             sel.appendChild(opt);
+
+            const fbOpt = document.createElement('option');
+            fbOpt.value = m.id;
+            fbOpt.textContent = `${m.name} (${m.model_name})`;
+            if (m.id === currentFallbackModelId) fbOpt.selected = true;
+            fbSel.appendChild(fbOpt);
         });
         if (!currentModelId) sel.value = '';
+        if (!currentFallbackModelId) fbSel.value = '';
     } catch (err) {
         console.error('[ModelSelector] Failed to load:', err);
     }
@@ -3040,6 +3480,7 @@ loadAgentSafetyRules();
 
 // ==================== Workplace Selector ====================
 const CURRENT_HOME_ID = '{{ agent.workplace_id or "" }}';
+const INITIAL_SANDBOX_STATE = {{ (agent.sandbox_enabled is none or agent.sandbox_enabled) | lower }};
 const HOME_STATUS_DOT_CLS = {
     connected:    'bg-green-500',
     disconnected: 'bg-gray-400',
@@ -3053,7 +3494,7 @@ function updateWorkspaceVisibility() {
     if (!sel || !workspaceRow) return;
     const selectedOpt = sel.options[sel.selectedIndex];
     const homeType = selectedOpt ? selectedOpt.dataset.type : '';
-    if (homeType === 'cloud') {
+    if (homeType === 'tunnel') {
         workspaceRow.classList.add('hidden');
     } else {
         workspaceRow.classList.remove('hidden');
@@ -3071,7 +3512,7 @@ function updateChatPanelTitle(connectionStatus) {
     if (homeType === 'remote') {
         icon.classList.remove('hidden');
         icon.className = 'inline-block w-2.5 h-2.5 rounded-full animate-pulse flex-shrink-0 ' + (isDisconnected ? 'bg-red-500' : 'bg-green-500');
-    } else if (homeType === 'cloud') {
+    } else if (homeType === 'tunnel') {
         icon.classList.remove('hidden');
         icon.className = 'inline-block w-2.5 h-2.5 rounded-full animate-pulse flex-shrink-0 ' + (isDisconnected ? 'bg-red-500' : 'bg-blue-500');
     } else {
@@ -3087,13 +3528,14 @@ function updateSandboxVisibility() {
     if (!sel || !sandboxInput || !sandboxWarning || !sandboxLabel) return;
     const selectedOpt = sel.options[sel.selectedIndex];
     const homeType = selectedOpt ? selectedOpt.dataset.type : '';
-    if (homeType === 'remote' || homeType === 'cloud') {
+    if (homeType === 'remote' || homeType === 'tunnel') {
         sandboxInput.disabled = true;
         sandboxInput.checked = false;
         sandboxLabel.classList.add('opacity-50', 'cursor-not-allowed');
         sandboxWarning.classList.remove('hidden');
     } else {
         sandboxInput.disabled = false;
+        sandboxInput.checked = INITIAL_SANDBOX_STATE;
         sandboxLabel.classList.remove('opacity-50', 'cursor-not-allowed');
         sandboxWarning.classList.add('hidden');
     }
@@ -3109,7 +3551,7 @@ async function loadWorkplaceSelector() {
             const opt = document.createElement('option');
             opt.value = h.id;
             opt.dataset.type = h.type;
-            const typeLabel = {local: 'Local', remote: 'Remote SSH', cloud: 'Cloud'}[h.type] || h.type;
+            const typeLabel = {local: 'Local', remote: 'Remote SSH', tunnel: 'Tunnel'}[h.type] || h.type;
             opt.textContent = `${h.name} [${typeLabel}]`;
             if (h.id === CURRENT_HOME_ID) opt.selected = true;
             sel.appendChild(opt);
@@ -3184,7 +3626,7 @@ setInterval(pollWorkplaceStatus, 5000);
 // ==================== Tab persistence ====================
 // Restore tab from URL hash on page load (same pattern as settings.html)
 (function() {
-    const valid = ['chat', 'general', 'knowledge', 'tools', 'channels', 'skills'];
+    const valid = ['chat', 'general', 'knowledge', 'tools', 'skills', 'channels', 'portals', 'artifacts'];
     const hash = location.hash.replace('#', '');
     window._tabInitHash = (hash && valid.includes(hash)) ? hash : 'chat';
     if (window._tabInitHash !== 'chat') {
@@ -3211,6 +3653,262 @@ document.addEventListener('keydown', function(e) {
     }
 });
 
+
+// ==================== Artifacts Tab ====================
+let _artifactsData = [];
+let _artifactsFilterType = 'all';
+
+async function loadArtifacts() {
+    const sort = document.getElementById('artifacts-sort').value;
+    try {
+        const res = await fetch(`/api/agents/${AGENT_ID}/artifacts?sort=${sort}`);
+        const data = await res.json();
+        _artifactsData = data.files || [];
+        renderArtifacts();
+    } catch(e) {
+        console.error('Failed to load artifacts:', e);
+    }
+}
+
+function renderArtifacts() {
+    const grid = document.getElementById('artifacts-grid');
+    const empty = document.getElementById('artifacts-empty');
+    
+    // Apply search filter
+    const query = (document.getElementById('artifacts-search').value || '').trim().toLowerCase();
+    let filtered = _artifactsData;
+    if (query) {
+        filtered = filtered.filter(f => f.filename.toLowerCase().includes(query));
+    }
+    
+    // Apply type filter
+    if (_artifactsFilterType !== 'all') {
+        filtered = filtered.filter(f => f.category === _artifactsFilterType);
+    }
+    
+    if (filtered.length === 0) {
+        grid.innerHTML = '';
+        empty.classList.remove('hidden');
+        return;
+    }
+    empty.classList.add('hidden');
+    
+    grid.innerHTML = filtered.map(f => {
+        const sizeStr = f.size < 1024 ? f.size + ' B' : f.size < 1048576 ? (f.size / 1024).toFixed(1) + ' KB' : (f.size / 1048576).toFixed(1) + ' MB';
+        const date = new Date(f.modified * 1000);
+        const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        const icon = getArtifactIcon(f.category);
+        const ext = f.filename.split('.').pop();
+        
+        return `
+            <div class="bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 rounded-lg p-2.5 hover:border-indigo-300 dark:hover:border-indigo-500 transition-colors cursor-pointer flex items-center gap-2.5 group" onclick="openArtifact('${f.filename}', '${f.category}')">
+                <div class="flex items-center justify-center w-8 h-8 rounded-md flex-shrink-0 ${icon.bg}">
+                    <svg class="w-4 h-4 ${icon.color}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        ${icon.path}
+                    </svg>
+                </div>
+                <div class="flex-1 min-w-0">
+                    <p class="text-sm font-medium text-gray-800 dark:text-gray-200 truncate" title="${f.filename}">${f.filename}</p>
+                    <p class="text-xs text-gray-400">${sizeStr} &middot; ${dateStr}</p>
+                </div>
+                <div class="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button onclick="event.stopPropagation(); downloadArtifact('${f.filename}')" title="Download" class="p-1.5 text-indigo-500 hover:text-indigo-700 rounded hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-colors">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                    </button>
+                    <button onclick="event.stopPropagation(); deleteArtifact('${f.filename}')" title="Delete" class="p-1.5 text-red-400 hover:text-red-600 rounded hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                    </button>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function getArtifactIcon(category) {
+    switch(category) {
+        case 'document':
+            return { bg: 'bg-blue-50 dark:bg-blue-900/20', color: 'text-blue-500', path: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path>' };
+        case 'image':
+            return { bg: 'bg-green-50 dark:bg-green-900/20', color: 'text-green-500', path: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>' };
+        case 'sound':
+            return { bg: 'bg-purple-50 dark:bg-purple-900/20', color: 'text-purple-500', path: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"></path>' };
+        case 'video':
+            return { bg: 'bg-rose-50 dark:bg-rose-900/20', color: 'text-rose-500', path: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path>' };
+        case 'text':
+            return { bg: 'bg-amber-50 dark:bg-amber-900/20', color: 'text-amber-500', path: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>' };
+        default:
+            return { bg: 'bg-gray-50 dark:bg-gray-800', color: 'text-gray-500', path: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path>' };
+    }
+}
+
+function filterArtifacts() {
+    renderArtifacts();
+}
+
+function setArtifactFilter(type) {
+    _artifactsFilterType = type;
+    document.querySelectorAll('.artifacts-filter-chip').forEach(chip => {
+        if (chip.dataset.type === type) {
+            chip.classList.add('border-indigo-500', 'text-indigo-600', 'bg-indigo-50', 'dark:bg-indigo-900/20', 'dark:text-indigo-400');
+            chip.classList.remove('border-gray-300', 'text-gray-600', 'hover:bg-gray-50', 'dark:border-gray-600', 'dark:text-gray-400', 'dark:hover:bg-gray-700');
+        } else {
+            chip.classList.remove('border-indigo-500', 'text-indigo-600', 'bg-indigo-50', 'dark:bg-indigo-900/20', 'dark:text-indigo-400');
+            chip.classList.add('border-gray-300', 'text-gray-600', 'hover:bg-gray-50', 'dark:border-gray-600', 'dark:text-gray-400', 'dark:hover:bg-gray-700');
+        }
+    });
+    renderArtifacts();
+}
+
+function downloadArtifact(filename) {
+    window.open(`/api/agents/${AGENT_ID}/artifacts/${filename}`, '_blank');
+}
+
+function openArtifact(filename, category) {
+    const existing = document.getElementById('artifact-viewer-modal');
+    if (existing) existing.remove();
+
+    const fileUrl = `/api/agents/${AGENT_ID}/artifacts/${filename}`;
+    const ext = filename.split('.').pop().toLowerCase();
+
+    const html = `
+    <div id="artifact-viewer-modal" class="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 p-4" onclick="if(event.target===this)closeArtifactViewer()">
+        <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-4xl mx-4 max-h-[90vh] flex flex-col overflow-hidden" id="artifact-viewer-box">
+            <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-600 flex-shrink-0">
+                <div class="flex items-center gap-3 min-w-0">
+                    <span class="flex items-center justify-center w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 text-indigo-500 flex-shrink-0">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
+                    </span>
+                    <div class="min-w-0">
+                        <h3 class="text-base font-semibold text-gray-800 dark:text-gray-100 truncate">${filename}</h3>
+                        <p class="text-xs text-gray-400">${category.charAt(0).toUpperCase() + category.slice(1)}</p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2 flex-shrink-0">
+                    <a href="${fileUrl}" download class="flex items-center gap-1.5 px-3 py-1.5 text-xs text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-md transition-colors" title="Download">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                        Download
+                    </a>
+                    <button onclick="closeArtifactViewer()" class="flex items-center justify-center w-8 h-8 rounded-md text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" title="Close">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                    </button>
+                </div>
+            </div>
+            <div class="flex-1 overflow-y-auto p-6" id="artifact-viewer-body">
+                <div class="flex items-center justify-center py-16">
+                    <svg class="animate-spin w-8 h-8 text-indigo-500" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                </div>
+            </div>
+        </div>
+    </div>`;
+
+    document.body.insertAdjacentHTML('beforeend', html);
+    document.addEventListener('keydown', _artifactViewerEscHandler);
+
+    renderArtifactContent(filename, category, fileUrl, ext);
+}
+
+function closeArtifactViewer() {
+    const modal = document.getElementById('artifact-viewer-modal');
+    if (modal) modal.remove();
+    document.removeEventListener('keydown', _artifactViewerEscHandler);
+}
+
+function _artifactViewerEscHandler(e) {
+    if (e.key === 'Escape') closeArtifactViewer();
+}
+
+async function renderArtifactContent(filename, category, fileUrl, ext) {
+    const body = document.getElementById('artifact-viewer-body');
+    if (!body) return;
+
+    try {
+        if (ext === 'md') {
+            // Fetch and render markdown
+            const res = await fetch(fileUrl);
+            const text = await res.text();
+            body.innerHTML = '<div class="recap-prose max-w-none">' + marked.parse(text) + '</div>';
+        } else if (ext === 'pdf') {
+            // Embed PDF viewer
+            body.innerHTML = `<iframe src="${fileUrl}" class="w-full rounded-md border border-gray-200 dark:border-gray-600" style="min-height: 70vh;"></iframe>`;
+        } else if (['mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v'].includes(ext)) {
+            // Video player
+            body.innerHTML = `
+                <div class="flex justify-center">
+                    <video controls class="max-w-full max-h-[70vh] rounded-md shadow-lg">
+                        <source src="${fileUrl}" type="video/${ext === 'mov' ? 'quicktime' : ext === 'mkv' ? 'x-matroska' : ext === 'm4v' ? 'mp4' : ext}">
+                        Your browser does not support the video tag.
+                    </video>
+                </div>`;
+        } else if (['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'wma'].includes(ext)) {
+            // Audio player
+            body.innerHTML = `
+                <div class="flex flex-col items-center gap-4 py-8">
+                    <div class="flex items-center justify-center w-20 h-20 rounded-full bg-purple-50 dark:bg-purple-900/20 text-purple-500">
+                        <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"></path></svg>
+                    </div>
+                    <div class="text-center mb-2">
+                        <p class="text-sm font-medium text-gray-700 dark:text-gray-300">${filename}</p>
+                    </div>
+                    <audio controls class="w-full max-w-lg">
+                        <source src="${fileUrl}" type="audio/${ext === 'm4a' ? 'mp4' : ext === 'wma' ? 'x-ms-wma' : ext}">
+                        Your browser does not support the audio tag.
+                    </audio>
+                </div>`;
+        } else if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'].includes(ext)) {
+            // Image viewer
+            body.innerHTML = `
+                <div class="flex justify-center">
+                    <img src="${fileUrl}" alt="${filename}" class="max-w-full max-h-[70vh] rounded-md shadow-lg object-contain">
+                </div>`;
+        } else if (['txt', 'csv', 'json', 'yaml', 'yml', 'xml', 'log',
+                     'py', 'c', 'rs', 'js', 'ts', 'jsx', 'tsx', 'cpp', 'cc', 'cxx',
+                     'h', 'hpp', 'java', 'go', 'rb', 'php', 'cs', 'swift', 'kt',
+                     'scala', 'r', 'm', 'sh', 'bash', 'zsh', 'ps1', 'sql',
+                     'html', 'css', 'scss', 'less', 'toml', 'ini', 'cfg', 'conf',
+                     'env', 'lock', 'diff', 'patch', 'Makefile', 'Dockerfile',
+                     'vue', 'svelte', 'lua', 'pl', 'pm', 'gradle', 'groovy'].includes(ext)) {
+            // Plain text / code viewer
+            const res = await fetch(fileUrl);
+            const text = await res.text();
+            const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            body.innerHTML = `<pre class="bg-gray-50 dark:bg-gray-900 rounded-md p-4 text-sm text-gray-800 dark:text-gray-200 overflow-x-auto max-h-[70vh] whitespace-pre-wrap font-mono">${escaped}</pre>`;
+        } else {
+            // Unknown type - show file info + download prompt
+            body.innerHTML = `
+                <div class="flex flex-col items-center gap-4 py-12 text-gray-400">
+                    <svg class="w-16 h-16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
+                    <p class="text-sm">Preview not available for this file type.</p>
+                    <a href="${fileUrl}" download class="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-md text-sm font-medium transition-colors">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                        Download File
+                    </a>
+                </div>`;
+        }
+    } catch(e) {
+        body.innerHTML = `
+            <div class="flex flex-col items-center gap-3 py-12 text-red-400">
+                <svg class="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86l-8.6 14.86A1 1 0 002.56 20h18.88a1 1 0 00.87-1.5l-8.6-14.86a1 1 0 00-1.74 0z"></path></svg>
+                <p class="text-sm">Failed to load file content.</p>
+            </div>`;
+        console.error('Failed to render artifact:', e);
+    }
+}
+
+async function deleteArtifact(filename) {
+    if (!await showConfirm({title: 'Delete Artifact', message: `Delete artifact "${filename}"? This cannot be undone.`, confirmText: 'Delete'})) return;
+    try {
+        const res = await fetch(`/api/agents/${AGENT_ID}/artifacts/${filename}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Artifact deleted.', 'success');
+            loadArtifacts();
+        } else {
+            showToast(data.error || 'Failed to delete artifact.', 'error');
+        }
+    } catch(e) {
+        showToast('Network error.', 'error');
+    }
+}
 // ==================== Clone Agent ====================
 function showCloneModal() {
     // Remove existing clone modal if any
@@ -3348,6 +4046,272 @@ async function toggleEnabled() {
         btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M5.636 5.636a9 9 0 1 0 12.728 0M12 3v9"/></svg><span>${label}</span>`;
         btn.title = `${label} Agent`;
         btn.className = `w-full text-left flex items-center gap-2 px-4 py-2 text-sm transition-colors ${newEnabled ? 'text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600' : 'text-green-600 hover:text-green-800 dark:text-green-400 dark:hover:text-green-300'}`;
+    }
+}
+
+// ==================== Portals Tab ====================
+let _portalEditingId = null;
+
+async function loadPortals() {
+    const res = await fetch(`/api/agents/${AGENT_ID}/portals`);
+    const data = await res.json();
+    const portals = data.portals || [];
+    const list = document.getElementById('portals-list');
+    const empty = document.getElementById('portals-empty');
+    if (portals.length === 0) {
+        list.innerHTML = '';
+        empty.classList.remove('hidden');
+        return;
+    }
+    empty.classList.add('hidden');
+    list.innerHTML = portals.map(p => {
+        const cfg = p.backend_config || {};
+        const cfgDisplay = typeof cfg === 'string' ? cfg : JSON.stringify(cfg);
+        const typeBadge = p.backend_type === 'ssh' ? 'bg-blue-100 text-blue-700' :
+                          p.backend_type === 'evonet' ? 'bg-purple-100 text-purple-700' :
+                          'bg-green-100 text-green-700';
+        const statusDot = p.status === 'connected' ? 'bg-green-500' : 'bg-gray-300';
+        const statusText = p.status || 'disconnected';
+        const connectBtn = p.status !== 'connected'
+            ? `<button onclick="event.stopPropagation(); testPortalConnection('${p.id}')" class="text-xs px-3 py-1 rounded bg-green-50 text-green-600 hover:bg-green-100">Connect</button>`
+            : `<button onclick="event.stopPropagation(); disconnectPortal('${p.id}')" class="text-xs px-3 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">Disconnect</button>`;
+        return `
+        <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700/50 rounded-md border border-gray-100 dark:border-gray-600">
+            <div>
+                <div class="flex items-center gap-2 mb-1">
+                    <span class="text-sm font-medium text-gray-800 dark:text-gray-100">${p.name || 'Unnamed'}</span>
+                    <span class="inline-block w-2 h-2 rounded-full ${statusDot}"></span>
+                    <span class="text-xs text-gray-400">${statusText}</span>
+                </div>
+                <div class="flex items-center gap-1.5 mb-1">
+                    <span class="text-xs px-2 py-0.5 rounded font-medium ${typeBadge}">${p.backend_type}</span>
+                    <code class="text-xs text-gray-500 dark:text-gray-400">/_portal/${p.virtual_path}/ → ${p.real_path}</code>
+                </div>
+                <div class="text-xs text-gray-400 dark:text-gray-500 truncate max-w-sm">${cfgDisplay.substring(0, 80)}</div>
+            </div>
+            <div class="flex items-center gap-2">
+                ${connectBtn}
+                <button onclick="event.stopPropagation(); showEditPortalModal('${p.id}')" class="text-xs text-indigo-500 hover:text-indigo-700">Edit</button>
+                <button onclick="event.stopPropagation(); deletePortal('${p.id}')" class="text-xs text-red-500 hover:text-red-700">Delete</button>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function showAddPortalModal() {
+    _portalEditingId = null;
+    document.getElementById('portal-modal-title').textContent = 'Add Portal';
+    document.getElementById('portal-name').value = '';
+    document.getElementById('portal-virtual-path').value = '';
+    document.getElementById('portal-backend-type').value = 'local';
+    document.getElementById('portal-real-path').value = '';
+    document.getElementById('portal-workplace-select').value = '';
+    // Reset checkbox and SSH fields
+    const cb = document.getElementById('portal-use-workplace');
+    if (cb) { cb.checked = false; cb.disabled = false; }
+    document.getElementById('portal-ssh-host').value = '';
+    document.getElementById('portal-ssh-port').value = '22';
+    document.getElementById('portal-ssh-username').value = '';
+    document.getElementById('portal-ssh-auth-type').value = 'key';
+    document.getElementById('portal-ssh-key-path').value = '';
+    document.getElementById('portal-ssh-passphrase').value = '';
+    document.getElementById('portal-ssh-password').value = '';
+    document.getElementById('portal-modal').classList.remove('hidden');
+    updatePortalConfigFields();
+}
+
+async function showEditPortalModal(portalId) {
+    _portalEditingId = portalId;
+    // Fetch single portal
+    const res = await fetch(`/api/agents/${AGENT_ID}/portals`);
+    const data = await res.json();
+    const portal = (data.portals || []).find(p => p.id === portalId);
+    if (!portal) return alert('Portal not found.');
+    document.getElementById('portal-modal-title').textContent = 'Edit Portal';
+    document.getElementById('portal-name').value = portal.name || '';
+    document.getElementById('portal-virtual-path').value = portal.virtual_path || '';
+    document.getElementById('portal-backend-type').value = portal.backend_type || 'local';
+    document.getElementById('portal-real-path').value = portal.real_path || '';
+    const cfg = typeof portal.backend_config === 'string' ? JSON.parse(portal.backend_config || '{}') : (portal.backend_config || {});
+    document.getElementById('portal-workplace-select').value = cfg.workplace_id || '';
+    if (cfg.workplace_id) {
+        const cb = document.getElementById('portal-use-workplace');
+        if (cb) cb.checked = true;
+        const sel = document.getElementById('portal-workplace-select');
+        if (sel) sel.classList.remove('hidden');
+    }
+    // Pre-populate SSH standalone fields if editing
+    if (portal.backend_type === 'ssh' && !cfg.workplace_id) {
+        document.getElementById('portal-ssh-host').value = cfg.host || '';
+        document.getElementById('portal-ssh-port').value = cfg.port || '22';
+        document.getElementById('portal-ssh-username').value = cfg.username || '';
+        document.getElementById('portal-ssh-auth-type').value = cfg.auth_type || 'key';
+        document.getElementById('portal-ssh-key-path').value = cfg.key_path || '';
+        document.getElementById('portal-ssh-passphrase').value = cfg.passphrase || '';
+        if (cfg.auth_type === 'password') {
+            document.getElementById('portal-ssh-password').value = cfg.password || '';
+        }
+    }
+    document.getElementById('portal-modal').classList.remove('hidden');
+    updatePortalConfigFields();
+}
+
+function closePortalModal() {
+    document.getElementById('portal-modal').classList.add('hidden');
+}
+
+function updatePortalConfigFields() {
+    const type = document.getElementById('portal-backend-type').value;
+    const sshNewConfig = document.getElementById('portal-ssh-config');
+    const workplaceRow = document.getElementById('portal-workplace-picker');
+    const useWorkplaceCb = document.getElementById('portal-use-workplace');
+    const workplaceSelect = document.getElementById('portal-workplace-select');
+
+    if (type === 'local') {
+        if (sshNewConfig) sshNewConfig.classList.add('hidden');
+        if (workplaceRow) workplaceRow.classList.add('hidden');
+        if (useWorkplaceCb) useWorkplaceCb.checked = false;
+    } else if (type === 'ssh') {
+        if (workplaceRow) workplaceRow.classList.remove('hidden');
+        loadPortalWorkplaces();
+        _applyWorkplaceToggle();
+    } else if (type === 'evonet') {
+        if (sshNewConfig) sshNewConfig.classList.add('hidden');
+        if (workplaceRow) workplaceRow.classList.remove('hidden');
+        if (useWorkplaceCb) { useWorkplaceCb.checked = true; useWorkplaceCb.disabled = true; }
+        if (workplaceSelect) workplaceSelect.classList.remove('hidden');
+        loadPortalWorkplaces();
+    }
+}
+
+function _applyWorkplaceToggle() {
+    const sshNewConfig = document.getElementById('portal-ssh-config');
+    const useWorkplaceCb = document.getElementById('portal-use-workplace');
+    const workplaceSelect = document.getElementById('portal-workplace-select');
+    if (!useWorkplaceCb) return;
+    const useExisting = useWorkplaceCb.checked;
+    if (sshNewConfig) {
+        if (useExisting) sshNewConfig.classList.add('hidden');
+        else sshNewConfig.classList.remove('hidden');
+    }
+    if (workplaceSelect) {
+        if (useExisting) workplaceSelect.classList.remove('hidden');
+        else {
+            workplaceSelect.classList.add('hidden');
+            workplaceSelect.value = '';
+        }
+    }
+}
+
+async function savePortal() {
+    const name = document.getElementById('portal-name').value.trim();
+    const virtualPath = document.getElementById('portal-virtual-path').value.trim().replace(/^\/+|\/+$/g, '');
+    const backendType = document.getElementById('portal-backend-type').value;
+    const realPath = document.getElementById('portal-real-path').value.trim();
+    const workplaceId = document.getElementById('portal-workplace-select').value.trim();
+
+    if (!name) return alert('Name is required.');
+    if (!virtualPath) return alert('Virtual path is required.');
+    if (!realPath) return alert('Real path is required.');
+
+    let backendConfig = {};
+    if (backendType === 'ssh' || backendType === 'evonet') {
+        if (workplaceId) {
+            backendConfig = { workplace_id: workplaceId };
+        } else if (backendType === 'evonet') {
+            return alert('Evonet portals require a workplace_id.');
+        } else {
+            // Standalone SSH config
+            backendConfig = {
+                host: document.getElementById('portal-ssh-host')?.value?.trim() || '',
+                port: parseInt(document.getElementById('portal-ssh-port')?.value || '22'),
+                username: document.getElementById('portal-ssh-username')?.value?.trim() || '',
+                auth_type: document.getElementById('portal-ssh-auth-type')?.value || 'key',
+                key_path: document.getElementById('portal-ssh-key-path')?.value?.trim() || '',
+                passphrase: document.getElementById('portal-ssh-passphrase')?.value?.trim() || '',
+            };
+            if (backendConfig.auth_type === 'password') {
+                backendConfig.password = document.getElementById('portal-ssh-password')?.value?.trim() || '';
+            }
+            if (!backendConfig.host || !backendConfig.username) {
+                return alert('Host and username are required for SSH.');
+            }
+        }
+    }
+
+    const body = {
+        name,
+        virtual_path: virtualPath,
+        backend_type: backendType,
+        backend_config: backendConfig,
+        real_path: realPath,
+    };
+
+    const url = _portalEditingId
+        ? `/api/portals/${_portalEditingId}`
+        : `/api/agents/${AGENT_ID}/portals`;
+    const method = _portalEditingId ? 'PUT' : 'POST';
+
+    const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (data.error) return alert(data.error);
+    closePortalModal();
+    loadPortals();
+}
+
+async function deletePortal(portalId) {
+    if (!await showConfirm({ title: 'Delete Portal', message: 'Delete this portal? This only removes the mapping — files on the target are not affected.', confirmText: 'Delete' })) return;
+    const res = await fetch(`/api/portals/${portalId}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.error) return alert(data.error);
+    loadPortals();
+}
+
+async function testPortalConnection(portalId) {
+    const res = await fetch(`/api/portals/${portalId}/connect`, { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+        showToast('Portal connected successfully!');
+    } else {
+        alert('Connection failed: ' + (data.error || 'unknown error'));
+    }
+    loadPortals();
+}
+
+async function disconnectPortal(portalId) {
+    const res = await fetch(`/api/portals/${portalId}/disconnect`, { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+        showToast('Portal disconnected.');
+    }
+    loadPortals();
+}
+
+// Load workplaces for dropdown in portal modal
+async function loadPortalWorkplaces() {
+    try {
+        const res = await fetch('/api/workplaces');
+        const data = await res.json();
+        const workplaces = data || [];
+        const sel = document.getElementById('portal-workplace-select');
+        if (!sel) return;
+        const prevVal = sel.value;
+        sel.innerHTML = '<option value="">-- Configure new connection --</option>';
+        workplaces.forEach(w => {
+            const label = `${w.name} (${w.type})`;
+            sel.innerHTML += `<option value="${w.id}">${label}</option>`;
+        });
+        // Restore previously selected value if it still exists in the new options
+        if (prevVal) {
+            const exists = Array.from(sel.options).some(o => o.value === prevVal);
+            if (exists) sel.value = prevVal;
+        }
+    } catch (e) {
+        console.error('Failed to load workplaces for portal picker:', e);
     }
 }
 </script>

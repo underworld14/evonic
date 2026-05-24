@@ -17,11 +17,13 @@ Guard rails:
 - Fan-out limit: max 5 unique targets per 5-second window (per LLM turn)
 """
 
+import json
 import time
 import uuid
 from collections import defaultdict
 from typing import Any, Callable, Dict, List
 
+from backend.agent_state import AgentState
 from backend.logging_config import get_logger
 from models.db import db
 
@@ -217,14 +219,60 @@ def _exec_send_agent_message(args: dict, agent_context: dict) -> dict:
             )
         }
 
+    # Sub-agents can only message their parent agent
+    if agent_context.get('is_subagent'):
+        parent_id = agent_context.get('parent_id', '')
+        if target_id != parent_id:
+            _logger.warning(
+                "Sub-agent '%s' tried to message '%s' — blocked (can only message parent '%s').",
+                sender_id, target_id, parent_id,
+            )
+            return {
+                'error': (
+                    f"Sub-agents can only send messages to their parent agent ('{parent_id}'). "
+                    f"End your turn with a response — it will be automatically forwarded to the parent."
+                )
+            }
+
     # Validate target agent
     target_agent = db.get_agent(target_id)
+    if not target_agent:
+        # Check for in-memory sub-agent
+        from backend.subagent_manager import subagent_manager
+        target_agent = subagent_manager.get(target_id)
     if not target_agent:
         _logger.warning("Agent '%s' tried to message non-existent target '%s'.", sender_id, target_id)
         return {'error': f"Agent '{target_id}' not found."}
     if not target_agent.get('is_super') and not target_agent.get('enabled', True):
         _logger.warning("Agent '%s' tried to message disabled agent '%s'.", sender_id, target_id)
         return {'error': f"Agent '{target_agent.get('name', target_id)}' is currently disabled."}
+
+    # Focus mode guard — reject messages to agents that are in focus mode
+    # (e.g., working on a kanban task and blocking interruptions from other sessions).
+    if target_agent.get('enable_agent_state'):
+        try:
+            agent_state_json = db.get_agent_state(agent_id=target_id)
+            if agent_state_json:
+                agent_state = AgentState.deserialize(agent_state_json)
+                if agent_state.focus:
+                    reason = agent_state.focus_reason or "no reason specified"
+                    _logger.info(
+                        "Agent '%s' tried to message focused agent '%s' (reason: %s) — blocked.",
+                        sender_id, target_id, reason,
+                    )
+                    return {
+                        'error': (
+                            f"Cannot send message to agent '{target_id}': "
+                            f"agent is currently focused.\n"
+                            f"Focus reason: {reason}"
+                        )
+                    }
+        except Exception as e:
+            _logger.warning(
+                "Failed to check focus state for agent '%s': %s — allowing message through.",
+                target_id, e,
+            )
+            # If we can't read the focus state, err on the side of allowing the message.
 
     # Global rate limit — cap total messages per sender across all targets
     if not _check_global_rate_limit(sender_id):
@@ -282,28 +330,18 @@ def _exec_send_agent_message(args: dict, agent_context: dict) -> dict:
     # Build the tagged message content and metadata
     tagged_message = f"[AGENT/{sender_name}] {message}"
 
-    reply_to_id = str(uuid.uuid4())
-    report_to_id = agent_context.get('user_id', '')
-    report_to_channel_id = agent_context.get('channel_id', '') or ''
+    from backend.agent_report_to import resolve_report_to_from_context
 
-    # If the sender is currently in an inter-agent session (external_user_id starts with
-    # __agent__), using that as report_to_id causes the auto-forward chain to bounce
-    # messages back into inter-agent sessions — eventually creating self-sessions
-    # (e.g. siwa/sessions/... with external_user_id = __agent__siwa).
-    # Fix: fall back to the sender's most recent human session so the reply chain
-    # always terminates in a human-visible session.
-    if report_to_id.startswith(_AGENT_MSG_PREFIX):
-        _logger.debug(
-            "sender '%s' is in inter-agent session ('%s') — looking up human session for report_to_id.",
-            sender_id, report_to_id,
+    reply_to_id = str(uuid.uuid4())
+    report_to_id, report_to_channel_id = resolve_report_to_from_context(
+        agent_context, sender_id,
+    )
+    if (agent_context.get('user_id', '') or '').startswith(_AGENT_MSG_PREFIX) and not report_to_id:
+        _logger.warning(
+            "send_agent_message: no human session found for sender '%s'. "
+            "Reply auto-forward will be skipped.",
+            sender_id,
         )
-        human_sess = db.get_latest_human_session(sender_id)
-        if human_sess:
-            report_to_id = human_sess.get('external_user_id', '')
-            report_to_channel_id = human_sess.get('channel_id') or ''
-        else:
-            report_to_id = ''
-            report_to_channel_id = ''
 
     metadata = {
         'agent_message': True,
@@ -356,28 +394,41 @@ def _exec_escalate_to_user(args: dict, agent_context: dict) -> dict:
         _logger.debug("Agent '%s' already in user session — escalate skipped.", agent_id)
         return {'error': 'Already in a user session — use send_agent_message or reply directly.'}
 
-    human_session = db.get_latest_human_session(agent_id)
-    if not human_session:
+    # Priority 1: send to the primary session (prefers channel sessions like Telegram)
+    primary_session = db.get_latest_human_session(agent_id)
+    if not primary_session:
         _logger.warning("Escalate failed: no human session found for agent '%s'.", agent_id)
         return {'error': 'No active human user session found for this agent.'}
 
     from backend.agent_runtime.notifier import notify_agent
-    result = notify_agent(
-        agent_id=agent_id,
-        tag='SYSTEM',
-        message=message,
-        external_user_id=human_session['external_user_id'],
-        channel_id=human_session.get('channel_id'),
-        dedup=False,
-        trigger_llm=False,
-        metadata={'escalated_from_agent_session': True},
+
+    def _deliver(session: dict) -> None:
+        notify_agent(
+            agent_id=agent_id,
+            tag='SYSTEM',
+            message=message,
+            external_user_id=session['external_user_id'],
+            channel_id=session.get('channel_id'),
+            dedup=False,
+            trigger_llm=False,
+            metadata={'escalated_from_agent_session': True},
+        )
+
+    _deliver(primary_session)
+    _logger.info("Agent '%s' escalated message to primary session '%s' (channel=%s).",
+                 agent_id, primary_session['external_user_id'], primary_session.get('channel_id'))
+
+    # Priority 2: also deliver to a web fallback session (no channel),
+    # so the user can see the message in the web UI too.
+    secondary = db.get_web_fallback_session(
+        agent_id,
+        exclude_session_id=primary_session.get('id'),
     )
+    if secondary:
+        _deliver(secondary)
+        _logger.info("Agent '%s' also escalated message to web session '%s'.",
+                     agent_id, secondary['external_user_id'])
 
-    if not result.get('success'):
-        _logger.error("Escalate failed for agent '%s': %s", agent_id, result.get('reason', 'unknown'))
-        return {'error': f"Failed to reach user session: {result.get('reason', 'unknown')}"}
-
-    _logger.info("Agent '%s' escalated message to user session '%s'.", agent_id, human_session['external_user_id'])
     return {
         'success': True,
         'message': 'Message forwarded to user session.',
@@ -446,9 +497,19 @@ def _on_final_answer(data: dict) -> None:
         agent_b_id, session_id, sender_id,
     )
 
+    # Resolve DB agent ID — sub-agents use their parent's per-agent chat DB
+    _db_agent_id = agent_b_id
+    try:
+        from backend.subagent_manager import subagent_manager
+        _sub = subagent_manager.get(agent_b_id)
+        if _sub:
+            _db_agent_id = _sub.get('parent_id', agent_b_id)
+    except Exception:
+        pass
+
     # Find the original message metadata from A
     try:
-        messages = db.get_session_messages(session_id, limit=20, agent_id=agent_b_id)
+        messages = db.get_session_messages(session_id, limit=20, agent_id=_db_agent_id)
     except Exception as e:
         _logger.warning(
             "Auto-forward: could not fetch session messages for '%s' (agent_b=%s): %s",
@@ -479,18 +540,20 @@ def _on_final_answer(data: dict) -> None:
         # query that finds the first agent-request message in the session.
         _logger.debug(
             "Auto-forward: report_to_id not found in recent %d messages for '%s' "
-            "in session '%s' — falling back to first-message lookup.",
+            "in session '%s' — falling back to latest-agent-request lookup.",
             len(messages), sender_id, session_id,
         )
         try:
-            first_meta = db.get_first_agent_request_metadata(session_id, agent_id=agent_b_id)
+            latest_meta = db.get_latest_agent_request_metadata(
+                session_id, agent_id=_db_agent_id, sender_agent_id=sender_id,
+            )
         except Exception as e:
-            _logger.warning("Auto-forward: first-message fallback failed for '%s': %s", session_id, e)
-            first_meta = None
-        if first_meta and first_meta.get('from_agent_id') == sender_id:
-            report_to_id = first_meta.get('report_to_id')
-            report_to_channel_id = first_meta.get('report_to_channel_id') or None
-            original_depth = first_meta.get('agent_message_depth', 0)
+            _logger.warning("Auto-forward: latest-agent-request fallback failed for '%s': %s", session_id, e)
+            latest_meta = None
+        if latest_meta and latest_meta.get('from_agent_id') == sender_id:
+            report_to_id = latest_meta.get('report_to_id')
+            report_to_channel_id = latest_meta.get('report_to_channel_id') or None
+            original_depth = latest_meta.get('agent_message_depth', 0)
 
     if not report_to_id:
         _logger.warning(
@@ -557,12 +620,9 @@ def _on_final_answer(data: dict) -> None:
         )
 
 
-# Register the listener at module import time
-try:
-    from backend.event_stream import event_stream
-    event_stream.on('final_answer', _on_final_answer)
-except Exception:
-    pass  # event stream may not be ready during some imports
+# NOTE: _on_final_answer listener is registered in
+# backend/agent_runtime/__init__.py at startup, not here,
+# so it fires regardless of whether agent_messaging tools are loaded.
 
 
 # ==================== Registry-style access ====================

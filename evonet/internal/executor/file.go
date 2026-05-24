@@ -1,8 +1,10 @@
 package executor
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,6 +67,114 @@ func (e *Executor) handleWriteFile(req Request) Response {
 	return okResp(req.ID, map[string]any{"ok": true, "path": path})
 }
 
+// --- Binary file transfer (base64-encoded, chunked) ---
+
+type readFileB64Params struct {
+	Path   string `json:"path"`
+	Offset int64  `json:"offset"` // byte offset to start reading from
+	Size   int    `json:"size"`   // bytes to read (0 = entire file)
+}
+
+type writeFileB64Params struct {
+	Path   string `json:"path"`
+	Data   string `json:"data"`    // base64-encoded chunk
+	Offset int64  `json:"offset"`  // byte offset (0 = start of file)
+	IsLast bool   `json:"is_last"` // true on final chunk
+	Mode   string `json:"mode"`    // "create" or "append"
+}
+
+func (e *Executor) handleReadFileB64(req Request) Response {
+	var p readFileB64Params
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return errResp(req.ID, "invalid params: "+err.Error())
+	}
+	path := resolvePathAbs(p.Path, e.workDir)
+	fi, err := os.Stat(path)
+	if err != nil {
+		return errResp(req.ID, "read_file_b64 error: "+err.Error())
+	}
+	totalSize := fi.Size()
+
+	f, err := os.Open(path)
+	if err != nil {
+		return errResp(req.ID, "read_file_b64 error: "+err.Error())
+	}
+	defer f.Close()
+
+	if p.Offset > 0 {
+		if _, err := f.Seek(p.Offset, io.SeekStart); err != nil {
+			return errResp(req.ID, "seek error: "+err.Error())
+		}
+	}
+
+	readSize := totalSize - p.Offset
+	if p.Size > 0 && int64(p.Size) < readSize {
+		readSize = int64(p.Size)
+	}
+	buf := make([]byte, readSize)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return errResp(req.ID, "read error: "+err.Error())
+	}
+	buf = buf[:n]
+
+	return okResp(req.ID, map[string]any{
+		"data":       base64.StdEncoding.EncodeToString(buf),
+		"bytes_read": n,
+		"total_size": totalSize,
+		"path":       path,
+	})
+}
+
+func (e *Executor) handleWriteFileB64(req Request) Response {
+	var p writeFileB64Params
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return errResp(req.ID, "invalid params: "+err.Error())
+	}
+	path := resolvePathAbs(p.Path, e.workDir)
+
+	decoded, err := base64.StdEncoding.DecodeString(p.Data)
+	if err != nil {
+		return errResp(req.ID, "base64 decode error: "+err.Error())
+	}
+
+	partPath := path + ".part"
+
+	if p.Offset == 0 {
+		// First chunk: create parent dirs and new .part file
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return errResp(req.ID, "mkdir error: "+err.Error())
+		}
+		f, err := os.Create(partPath)
+		if err != nil {
+			return errResp(req.ID, "create error: "+err.Error())
+		}
+		defer f.Close()
+		if _, err := f.Write(decoded); err != nil {
+			return errResp(req.ID, "write error: "+err.Error())
+		}
+	} else {
+		// Subsequent chunk: append to .part file
+		f, err := os.OpenFile(partPath, os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			return errResp(req.ID, "open error: "+err.Error())
+		}
+		defer f.Close()
+		if _, err := f.Write(decoded); err != nil {
+			return errResp(req.ID, "write error: "+err.Error())
+		}
+	}
+
+	if p.IsLast {
+		// Rename .part to final path (atomic on same filesystem)
+		if err := os.Rename(partPath, path); err != nil {
+			return errResp(req.ID, "rename error: "+err.Error())
+		}
+	}
+
+	return okResp(req.ID, map[string]any{"ok": true, "path": path})
+}
+
 // resolvePath joins the requested path with workDir, cleans the result,
 // and validates that the resolved path stays within workDir.
 func resolvePath(path, workDir string) (string, error) {
@@ -80,4 +190,15 @@ func resolvePath(path, workDir string) (string, error) {
 		return "", fmt.Errorf("path escapes working directory: %s", path)
 	}
 	return clean, nil
+}
+
+// resolvePathAbs resolves a path without workDir sandboxing.
+// Absolute paths are returned cleaned; relative paths are joined with workDir.
+// Used by b64 transfer methods that receive pre-resolved absolute paths from
+// the server's portal_copy transfer engine.
+func resolvePathAbs(path, workDir string) string {
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	return filepath.Clean(filepath.Join(workDir, path))
 }

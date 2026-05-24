@@ -1,0 +1,91 @@
+# Builtin RTK filter for Python ecosystem tools.
+# Matches: pytest, ruff, flake8, pip, python
+
+[filter]
+command = "^(pytest|python|ruff|flake8|pip)"
+
+description = "Compress output from common Python tools: pytest, ruff, flake8, pip, python"
+
+# ANSI escape codes are stripped before anything else runs
+strip_ansi = true
+
+# --- strip_lines: remove noise lines from stdout ---
+# These patterns are applied per-line.  Any line matching at least one
+# pattern is removed.  Order does not matter (all are checked).
+strip_lines = [
+    # -- pytest: session headers and boilerplate --
+    "^=+ test session starts =+",
+    "^platform ",
+    "^rootdir:",
+    "^plugins: ",
+    "^collected \\d+ items?",
+    "^cachedir:",
+    "^Using --randomly-seed=",
+    "^\\w+: _pytest\\.",
+    "^gw\\[\\d+\\] ",       # pytest-xdist worker prefix noise
+    "^\\[gw\\d+\\] ",       # alternative xdist format
+
+    # -- pytest: passing test lines (strip these; FAILED/ERROR survive) --
+    " PASSED\\b",
+    "^PASSED\\b",
+
+    # -- pytest: progress dots and coverage --
+    "^-+ coverage:",
+    "^Name\\s+Stmts\\s+Miss\\s+Cover",
+
+    # -- pip install: progress bars and download noise --
+    "^\\s*[━╺╸╼╌]",         # unicode block-char progress bars
+    "^\\s*\\|",             # ASCII progress bars
+    "^\\s*\\d+%",           # percentage-only lines
+    "^\\s*Downloading ",
+    "^Requirement already satisfied:",
+    "^Collecting ",
+    "^  Using cached ",
+    "^  Obtaining ",
+    "^  Preparing metadata",
+    "^  Building wheel",
+    "^  Built ",
+    "^  Installing build dependencies",
+    "^  Getting requirements",
+    "^  Creating ",
+    "^Installing collected packages:",
+    "^  Attempting uninstall:",
+    "^  Found existing installation:",
+    "^  Uninstalling ",
+    "^  Running setup\\.py",
+    "^  Stored in directory:",
+
+    # -- pip list: table headers --
+    "^Package\\s+Version$",
+    "^Editable project location$",
+    "^-{2,}",               # dashes-only separator lines
+
+    # -- flake8 / ruff: informational summaries (noise) --
+    "^\\d+ files? (left unchanged|already clean)$",
+    "^All checks passed!",
+    "^Found \\d+ errors?",   # ruff summary (keep the actual diagnostics)
+    "^\\d+ errors? found",            # ruff/flake8 summary line
+    "^\\d+ fixable with",
+    "^\\d+ potentially fixable",
+
+    # -- generic: empty / whitespace-only lines at this point --
+    "^\\s*$",
+]
+
+# --- keep_lines: if non-empty, only lines matching at least one pattern survive ---
+# Left empty — we rely on strip_lines to prune noise; everything else is signal.
+keep_lines = []
+
+# If the entire output is filtered away, return this.
+on_empty = "(no output from Python tool)"
+
+# --- replace: transform matching lines ---
+# Applied in order.  Strips the filename:line:col prefix from flake8/ruff
+# diagnostics so the LLM sees only the message.
+[[filter.replace]]
+pattern = '^[./]\S+:\d+:\d*:?\s*'
+replacement = ""
+
+[[filter.replace]]
+pattern = '^\S+:\d+:\d*:?\s*'
+replacement = ""

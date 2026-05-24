@@ -17,11 +17,16 @@ from models.mixins import (
     DashboardMixin,
     ModelsMixin,
     WorkplaceMixin,
+    PortalMixin,
     SafetyRuleMixin,
+    AttachmentsMixin,
+    UserMixin,
+    TransferJobMixin,
 )
 
 
 class Database(
+    UserMixin,
     SchemaMixin,
     EvaluationMixin,
     TestingMixin,
@@ -34,7 +39,10 @@ class Database(
     DashboardMixin,
     ModelsMixin,
     WorkplaceMixin,
+    PortalMixin,
     SafetyRuleMixin,
+    AttachmentsMixin,
+    TransferJobMixin,
 ):
     def __init__(self, db_path: str = config.DB_PATH):
         self.db_path = db_path

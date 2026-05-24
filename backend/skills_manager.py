@@ -36,6 +36,7 @@ def _load_global_config() -> Dict[str, Any]:
 class SkillsManager:
     def __init__(self):
         os.makedirs(SKILLS_DIR, exist_ok=True)
+        self._skill_name_cache: Dict[str, str] = {}
 
     def is_skill_enabled(self, skill_id: str) -> bool:
         """Check if a skill is enabled. DB is authoritative; absent = disabled."""
@@ -83,6 +84,25 @@ class SkillsManager:
         manifest['config'] = self.get_skill_config(skill_id)
         return manifest
 
+    def get_skill_name(self, skill_id: str) -> str:
+        """Read only the manifest name from skill.json — no tool defs, no DB queries."""
+        cached = self._skill_name_cache.get(skill_id)
+        if cached is not None:
+            return cached
+        manifest_path = os.path.join(SKILLS_DIR, skill_id, 'skill.json')
+        if not os.path.isfile(manifest_path):
+            self._skill_name_cache[skill_id] = skill_id
+            return skill_id  # fallback to ID
+        try:
+            with open(manifest_path, encoding='utf-8') as f:
+                manifest = json.load(f)
+            name = manifest.get('name', skill_id)
+            self._skill_name_cache[skill_id] = name
+            return name
+        except (json.JSONDecodeError, IOError):
+            self._skill_name_cache[skill_id] = skill_id
+            return skill_id
+
     def get_skill_tool_defs(self, skill_id: str) -> List[Dict[str, Any]]:
         """Load tool definitions for a specific skill."""
         skill_dir = os.path.join(SKILLS_DIR, skill_id)
@@ -127,10 +147,20 @@ class SkillsManager:
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             with zipfile.ZipFile(zip_path, 'r') as zf:
-                # Security: check for path traversal
+                # Security: check for path traversal in entry names AND extraction destinations
+                tmp_dir_real = os.path.realpath(tmp_dir)
                 for entry in zf.namelist():
+                    # Check entry name for obvious traversal attempts
                     if entry.startswith('/') or '..' in entry:
                         return {'error': f'Unsafe path in zip: {entry}'}
+                    
+                    # Validate the actual extraction destination
+                    extract_path = os.path.join(tmp_dir, entry)
+                    extract_path_real = os.path.realpath(extract_path)
+                    
+                    if not extract_path_real.startswith(tmp_dir_real + os.sep):
+                        return {'error': f'Path traversal detected in zip: {entry}'}
+                
                 zf.extractall(tmp_dir)
 
             # Find skill.json — at root or one level deep

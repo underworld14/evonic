@@ -93,7 +93,7 @@ class TurnPrefetcher:
             fresh_tools = _ctx.build_tools(agent)
 
             # Rebuild agent context
-            assigned_tool_ids = db.get_agent_tools(agent_id)
+            assigned_tool_ids = db.get_agent_tools(db_agent_id)
             fresh_agent_context = {
                 'id': agent_id,
                 'name': agent.get('name', ''),
@@ -105,6 +105,8 @@ class TurnPrefetcher:
                 'assigned_tool_ids': assigned_tool_ids,
                 'workspace': agent.get('workspace') or None,
                 'is_super': bool(agent.get('is_super')),
+                'is_subagent': bool(agent.get('is_subagent')),
+                'parent_id': agent.get('parent_id'),
                 'agent_messaging_enabled': bool(agent.get('agent_messaging_enabled')),
                 'sandbox_enabled': agent.get('sandbox_enabled', 1),
                 'safety_checker_enabled': agent.get('safety_checker_enabled', 1),
@@ -133,10 +135,18 @@ class TurnPrefetcher:
 
             if _use_jsonl:
                 conv_msgs = _jsonl_entries
+                # Without summary: skip leading non-user messages.
+                # With summary: keep assistant msgs (unsummarized continuation)
+                # but skip orphaned tool responses (no preceding tool_calls).
                 tail_start = 0
-                while (tail_start < len(conv_msgs)
-                       and conv_msgs[tail_start].get('role') != 'user'):
-                    tail_start += 1
+                if not summary_record:
+                    while (tail_start < len(conv_msgs)
+                           and conv_msgs[tail_start].get('role') != 'user'):
+                        tail_start += 1
+                else:
+                    while (tail_start < len(conv_msgs)
+                           and conv_msgs[tail_start].get('role') == 'tool'):
+                        tail_start += 1
                 for msg in conv_msgs[tail_start:]:
                     fresh_messages.append(msg)
             else:
@@ -145,9 +155,10 @@ class TurnPrefetcher:
                     raw_tail = db.get_messages_after(
                         session_id, summary_record['last_message_id'],
                         agent_id=db_agent_id)
+                    # Skip orphaned tool responses, keep the rest.
                     tail_start = 0
                     while (tail_start < len(raw_tail)
-                           and raw_tail[tail_start].get('role') != 'user'):
+                           and raw_tail[tail_start].get('role') == 'tool'):
                         tail_start += 1
                     for msg in raw_tail[tail_start:]:
                         fresh_messages.append(
@@ -199,6 +210,20 @@ class TurnPrefetcher:
                     chan_instr = chan_inst.get_system_instructions()
                     if chan_instr:
                         fresh_messages.insert(1, {"role": "system", "content": chan_instr})
+
+            # Inject channel user identity (authoritative name for this session).
+            # Skip if already present in the message list (from JSONL history) to
+            # avoid duplicates when rebuilding from scratch.
+            _already_injected = any(
+                "## Current User" in (m.get("content") or "")
+                for m in fresh_messages[:6]
+            )
+            if ctx.channel_id and not ctx.external_user_id.startswith("__agent__") and not _already_injected:
+                user_id_ctx = _ctx.build_user_identity_context(
+                    ctx.channel_id, ctx.external_user_id,
+                )
+                if user_id_ctx:
+                    fresh_messages.insert(1, {"role": "system", "content": user_id_ctx})
 
             # Record last user message for staleness detection
             last_user = ""

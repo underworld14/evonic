@@ -412,19 +412,28 @@ class LLMClient:
             merged["content"] = combined_content
             processed_messages = [merged] + processed_messages[n_sys:]
 
-        # Handle reasoning_content field based on thinking mode:
-        # - Thinking ON (self.thinking=True): add the field on every assistant message.
-        #   Always-thinking models (Kimi K2, DeepSeek-R1, MiniMax M2) require
-        #   reasoning_content to be present on ALL assistant messages, including those
-        #   with tool_calls, even when the model returned no reasoning for that turn.
-        #   This is done unconditionally for thinking models so the API never sees a
-        #   missing reasoning_content field after tool calls.
-        # - Thinking OFF (self.thinking=False): other APIs reject the field entirely — strip it.
-        if self.thinking:
+        # Handle reasoning_content field based on thinking mode.
+        # Some models (e.g. DeepSeek-v4) produce reasoning_content automatically
+        # even without explicit thinking mode. Detect this by checking if any
+        # assistant message already carries reasoning_content — if so, preserve
+        # it so the API receives it back on the next call.
+        # Always-thinking models (Kimi K2, DeepSeek-R1, MiniMax M2) require
+        # reasoning_content to be present on ALL assistant messages, including those
+        # with tool_calls, even when the model returned no reasoning for that turn.
+        _has_reasoning = any(
+            _msg.get("reasoning_content")
+            for _msg in processed_messages
+            if _msg.get("role") == "assistant"
+        )
+        if self.thinking or _has_reasoning:
+            # Ensure every assistant message has the field (some APIs require it
+            # even on turns where the model produced no reasoning).
             for _msg in processed_messages:
                 if _msg.get("role") == "assistant" and "reasoning_content" not in _msg:
                     _msg["reasoning_content"] = ""
         else:
+            # No thinking configured and no reasoning in history — strip the
+            # field so APIs that reject unknown fields are not affected.
             for _msg in processed_messages:
                 _msg.pop("reasoning_content", None)
 
@@ -846,6 +855,31 @@ class LLMClient:
             cleaned = strip_thinking_tags(content)[0] if content else ""
             if not cleaned and embedded_final:
                 cleaned = embedded_final
+            # Check for Qwen-style XML tool calls that may appear in
+            # reasoning_content instead of content (common with Qwen-based models).
+            # Two forms: (a) trailing after </think> in embedded_final,
+            # (b) directly in reasoning_text when content is empty.
+            xml_source = None
+            if embedded_final and "<tool_call>" in embedded_final:
+                xml_source = embedded_final
+            elif not cleaned and reasoning_text and "<tool_call>" in reasoning_text:
+                xml_source = reasoning_text
+            if xml_source:
+                from evaluator.qwen_parser import (
+                    extract_qwen_tool_calls,
+                    qwen_tool_calls_to_openai_format,
+                    strip_qwen_tool_calls,
+                )
+                qwen_calls = extract_qwen_tool_calls(xml_source)
+                if qwen_calls:
+                    openai_calls = qwen_tool_calls_to_openai_format(qwen_calls)
+                    visible_content = strip_qwen_tool_calls(xml_source)
+                    return {
+                        "content": visible_content,
+                        "thinking": reasoning_text or None,
+                        "raw": content,
+                        "tool_calls": openai_calls,
+                    }
             return {"content": cleaned, "thinking": reasoning_text, "raw": content}
 
         if content:

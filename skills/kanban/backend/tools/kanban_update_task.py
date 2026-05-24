@@ -2,7 +2,12 @@
 Kanban update task tool — update assignee and/or status at once.
 
 This is the successor to kanban_update_status. It supports updating
-both status and assignee in a single call.
+status, assignee, title, description, and priority in a single call.
+
+Permission is controlled by setting 'kanban:edit_task_super_only':
+- When enabled (default): only super agent can edit title, description, or priority
+- When disabled: regular agents can edit task metadata
+- Status updates are always gated by the assignee check
 """
 
 from datetime import datetime, timezone
@@ -21,15 +26,16 @@ def execute(agent: dict, args: dict) -> dict:
     new_title = args.get('title')
     new_description = args.get('description')
     new_priority = args.get('priority')
+    new_dependencies = args.get('dependencies')
 
     if not task_id:
         return {'status': 'error', 'message': 'task_id is required'}
 
     # At least one field must be provided
-    if new_status is None and new_assignee is None and new_title is None and new_description is None and new_priority is None:
+    if new_status is None and new_assignee is None and new_title is None and new_description is None and new_priority is None and new_dependencies is None:
         return {
             'status': 'error',
-            'message': 'At least one of "status", "assignee", "title", "description", or "priority" must be provided',
+            'message': 'At least one of "status", "assignee", "title", "description", "priority", or "dependencies" must be provided',
         }
 
     # Validate status if provided
@@ -51,13 +57,27 @@ def execute(agent: dict, args: dict) -> dict:
         return {'status': 'error', 'message': f'Task {task_id} not found'}
 
     # Authorization: only the assignee (or a super agent)
-    # may update the task's progress status. Other field updates
-    # (title, description, priority) are unrestricted.
+    # may update the task's progress status.
     if new_status is not None:
         if task.get('assignee') != agent_id and not agent.get('is_super'):
             return {
                 'status': 'error',
                 'message': 'Only the assigned agent or a super agent can update this task',
+            }
+
+    # Check edit_task_super_only setting for title/description/priority edits
+    is_editing_metadata = (new_title is not None or new_description is not None or new_priority is not None)
+    if is_editing_metadata and not agent.get('is_super'):
+        try:
+            from backend.skills_manager import skills_manager
+            config = skills_manager.get_skill_config('kanban')
+            super_only = bool(config.get('edit_task_super_only', True))
+        except Exception:
+            super_only = True  # fail closed
+        if super_only:
+            return {
+                'status': 'error',
+                'message': 'You are not authorized to edit task details. Only the super agent can edit task title, description, or priority.',
             }
 
     # Build update fields
@@ -115,5 +135,13 @@ def execute(agent: dict, args: dict) -> dict:
         event_stream.emit('kanban_task_updated', {'task': updated})
     except Exception:
         pass
+
+    # Handle dependencies if provided
+    if new_dependencies is not None:
+        try:
+            deps = [int(d) for d in new_dependencies]
+            kanban_db.set_dependencies(int(task_id), deps)
+        except (ValueError, TypeError) as e:
+            return {'status': 'error', 'message': str(e)}
 
     return {'status': 'success', 'task': updated}

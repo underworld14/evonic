@@ -20,8 +20,22 @@ for lib_dir in ("lib",):
         sys.path.insert(0, lib_path)
 
 
-# PID file location
-PID_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "run")
+# PID file location.
+#
+# After migration to the release-based layout the canonical run/ directory
+# lives at ``<app_root>/shared/run/`` (supervisor writes the daemon PID
+# there). Pre-migration installs still use ``<install_root>/run/``. Resolve
+# whichever is present so ``evonic status``/``evonic stop`` find a daemon
+# regardless of whether it was launched by the legacy in-process path or by
+# supervisor.
+def _resolve_pid_dir():
+    shared_run = os.path.join(ROOT, "shared", "run")
+    if os.path.isdir(shared_run):
+        return shared_run
+    return os.path.join(ROOT, "run")
+
+
+PID_DIR = _resolve_pid_dir()
 PID_FILE = os.path.join(PID_DIR, "evonic.pid")
 
 
@@ -43,12 +57,12 @@ EVONIC_BANNER = (
 
          ░░░░░░░░░░░░░░░░░░░░░░░░
        ░░▒▒███████████████████▒▒░░
-     ░░▒▒██▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓██▒▒░░      ___________                  .__.
-     ░░▒▒██▓▓▒▒░░░░░░░░░░▒▒▓▓██▒▒░░      \_   _____/__  ______   ____ |__| _____
-     ░░▒▒██▓▓▒▒░░ ░░  ░░ ▒▒▓▓██▒▒░░       |    __)_\  \/ /    \ /    \|  |/ ____\
-     ░░▒▒██▓▓▒▒░░░░░░░░░░▒▒▓▓██▒▒░░       |        \\   (  ()  )   |  \  \  \____
-     ░░▒▒████████████████████▒▒░░░░      /_______  / \_/ \____/|___|  /__|\___  /
-       ░░▒▒░░░░░░░░░░░░░░░░░░░░                  \/                 \/        \/
+     ░░▒▒██▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓██▒▒░░      ___________                  .__.
+     ░░▒▒██▓█████████████████▓██▒▒░░      \_   _____/__  ______   ____ |__| _____
+     ░░▒▒██▓█████ ██  ██ ████▓██▒▒░░       |    __)_\  \/ /    \ /    \|  |/ ____\
+     ░░▒▒██▓█████████████████▓██▒▒░░       |        \\   (  ()  )   |  \  \  \____
+     ░░▒▒███████████████████████▒▒░░      /_______  / \_/ \____/|___|  /__|\___  /
+       ░░▒▒░░░░░░░░░░░░░░░░░░▒▒░░                 \/                 \/        \/
         ▓▓ ░░▓▓ ░░ ▓▓ ░░▓▓ ░░▓▓
       ▒▒ ░░ ▒▒ ▓▓  ▒▒  ▓▓   ▒▒▒
         ░░ ░▒░  ▓▓  ▒▒  ▓▓  ░▓
@@ -159,10 +173,10 @@ def start_server(port=None, host=None, debug=None, daemon=False):
             if _is_running(proc.pid):
                 print(f"Supervisor started (PID: {proc.pid})")
                 print(
-                    f"Server akan berjalan dari current release dengan self-update otomatis"
+                    f"Server will run from the current release with automatic self-update"
                 )
             else:
-                print("Gagal start supervisor. Cek log untuk detail.")
+                print("Failed to start supervisor. Check the log for details.")
                 sys.exit(1)
             return
 
@@ -216,6 +230,29 @@ def start_server(port=None, host=None, debug=None, daemon=False):
 
     if debug:
         print("Debug mode: ON")
+
+    # Foreground release-mode parity: if the app was migrated to release-based
+    # layout, exec the release's python on its app.py (mirrors daemon path).
+    # Falls through to legacy in-process import when no release is staged.
+    current_link = os.path.join(ROOT, "current")
+    sup_cfg_path = os.path.join(ROOT, "supervisor", "config.json")
+    release_mode = os.path.islink(current_link) and os.path.exists(sup_cfg_path)
+    if release_mode:
+        release_path = os.path.realpath(current_link)
+        if sys.platform == "win32":
+            release_py = os.path.join(release_path, ".venv", "Scripts", "python.exe")
+        else:
+            release_py = os.path.join(release_path, ".venv", "bin", "python")
+        release_app = os.path.join(release_path, "app.py")
+        if os.path.exists(release_py) and os.path.exists(release_app):
+            print(EVONIC_BANNER)
+            print(f"Starting server (Ctrl+C to stop)")
+            print(f"Host: {host}")
+            print(f"Port: {port}")
+            print(f"URL: http://{host if host != '0.0.0.0' else 'localhost'}:{port}")
+            os.chdir(release_path)
+            os.execv(release_py, [release_py, release_app])
+            # execv replaces the process; lines below unreachable.
 
     try:
         from app import app
@@ -1506,7 +1543,6 @@ def setup_wizard():
 
     from backend.setup import (
         PROVIDER_DEFAULTS,
-        TONE_PRESETS,
         build_sandbox_image,
         check_docker_available,
         run_setup,
@@ -1627,44 +1663,7 @@ def setup_wizard():
         )
         sys.exit(1)
 
-    # ── Step 7: Communication style ──
-    tones = list(TONE_PRESETS.items())
-    print()
-    print("  Communication style:")
-    print()
-    for i, (tid, t) in enumerate(tones, 1):
-        print(f"    [{i}] {t['label']:<14} {t['description']}")
-    print()
-    try:
-        tone_choice = input("  Choice [1]: ").strip() or "1"
-    except (EOFError, KeyboardInterrupt):
-        print("\n  Aborted.")
-        sys.exit(1)
-    try:
-        tidx = int(tone_choice) - 1
-        if tidx < 0 or tidx >= len(tones):
-            raise ValueError
-    except ValueError:
-        print("  Invalid choice.")
-        sys.exit(1)
-
-    tone_id, tone_cfg = tones[tidx]
-    custom_tone_text = ""
-    if tone_id == "custom":
-        print()
-        print("  Enter your custom style instructions (press Enter twice to finish):")
-        lines = []
-        try:
-            while True:
-                line = input("  > ")
-                if line == "" and lines and lines[-1] == "":
-                    break
-                lines.append(line)
-        except (EOFError, KeyboardInterrupt):
-            pass
-        custom_tone_text = "\n".join(lines).strip()
-
-    # ── Step 8: Docker Sandbox Detection ──
+    # ── Step 6: Docker Sandbox Detection ──
     sandbox_enabled = False
     print()
     docker_status = check_docker_available()
@@ -1701,7 +1700,7 @@ def setup_wizard():
         print(f"  Docker not available — {docker_status['message']}")
         print("  Sandbox execution will be disabled.")
 
-    # ── Step 9: Confirm ──
+    # ── Step 7: Confirm ──
     print()
     print("  Setup Summary")
     print("  " + "─" * 30)
@@ -1709,7 +1708,6 @@ def setup_wizard():
     print(f"  Base URL       : {base_url}")
     print(f"  Model          : {model_name}")
     print(f"  Agent          : {agent_name} ({agent_id})")
-    print(f"  Style          : {tone_cfg['label']}")
     print(f"  Sandbox        : {'Enabled' if sandbox_enabled else 'Disabled'}")
     print()
     try:
@@ -1731,8 +1729,6 @@ def setup_wizard():
         api_key=api_key,
         agent_name=agent_name,
         agent_id=agent_id,
-        tone=tone_id,
-        custom_tone_text=custom_tone_text,
         sandbox_enabled=sandbox_enabled,
     )
     if outcome.get("error"):
@@ -1743,7 +1739,7 @@ def setup_wizard():
     print()
     print(f"  Super agent '{agent_name}' created successfully.")
 
-    # ── Step 10: Telegram Binding ──
+    # ── Step 8: Telegram Binding ──
     bot_token = ""
     print()
     print("  Telegram Integration")
@@ -1782,7 +1778,7 @@ def setup_wizard():
     else:
         print("  Skipped. You can add Telegram later from the web dashboard.")
 
-    # ── Step 11: Password Setup ──
+    # ── Step 10: Password Setup ──
     from werkzeug.security import generate_password_hash
 
     print()
@@ -1813,7 +1809,7 @@ def setup_wizard():
         if pw1 != pw2:
             print("  Error: Passwords do not match. Try again.")
             continue
-        new_hash = generate_password_hash(pw1)
+        new_hash = generate_password_hash(pw1, method="pbkdf2:sha256")
         _update_env_var(env_path, "ADMIN_PASSWORD_HASH", new_hash)
         print("  Password set successfully.")
         break
@@ -1888,7 +1884,7 @@ def pass_setup():
         if pw1 != pw2:
             print("Error: Passwords do not match.")
             sys.exit(1)
-        new_hash = generate_password_hash(pw1)
+        new_hash = generate_password_hash(pw1, method="pbkdf2:sha256")
         _update_env_var(env_path, "ADMIN_PASSWORD_HASH", new_hash)
         print("Password set successfully.")
     else:
@@ -1919,7 +1915,7 @@ def pass_setup():
             print("Error: Passwords do not match.")
             sys.exit(1)
 
-        new_hash = generate_password_hash(pw1)
+        new_hash = generate_password_hash(pw1, method="pbkdf2:sha256")
         _update_env_var(env_path, "ADMIN_PASSWORD_HASH", new_hash)
         print("Password changed successfully.")
 
@@ -2125,7 +2121,6 @@ def reconfigure_wizard(supervisor=False):
     from backend.setup import (
         LANGUAGE_PRESETS,
         PROVIDER_DEFAULTS,
-        TONE_PRESETS,
         build_sandbox_image,
         check_docker_available,
         run_reconfigure,
@@ -2136,7 +2131,6 @@ def reconfigure_wizard(supervisor=False):
     super_agent = db.get_super_agent()
     agent_id = super_agent["id"]
 
-    current_tone = db.get_setting("super_agent_tone", "professional")
     current_language = db.get_setting("agent_language", "english")
     current_sandbox = db.get_setting("sandbox_default_enabled", "0") == "1"
 
@@ -2263,50 +2257,7 @@ def reconfigure_wizard(supervisor=False):
             print("  Aborted.")
             sys.exit(1)
 
-    # ── Step 6: Communication style ──
-    tones = list(TONE_PRESETS.items())
-    print()
-    print("  Communication style:")
-    print()
-    current_tone_idx = 1
-    for i, (tid, t) in enumerate(tones, 1):
-        mark = " (current)" if tid == current_tone else ""
-        print(f"    [{i}] {t['label']:<14} {t['description']}{mark}")
-        if tid == current_tone:
-            current_tone_idx = i
-    print()
-    try:
-        tone_choice = input(f"  Choice [{current_tone_idx}]: ").strip() or str(
-            current_tone_idx
-        )
-    except (EOFError, KeyboardInterrupt):
-        print("\n  Aborted.")
-        sys.exit(1)
-    try:
-        tidx = int(tone_choice) - 1
-        if tidx < 0 or tidx >= len(tones):
-            raise ValueError
-    except ValueError:
-        print("  Invalid choice.")
-        sys.exit(1)
-
-    tone_id, tone_cfg = tones[tidx]
-    custom_tone_text = ""
-    if tone_id == "custom":
-        print()
-        print("  Enter your custom style instructions (press Enter twice to finish):")
-        lines = []
-        try:
-            while True:
-                line = input("  > ")
-                if line == "" and lines and lines[-1] == "":
-                    break
-                lines.append(line)
-        except (EOFError, KeyboardInterrupt):
-            pass
-        custom_tone_text = "\n".join(lines).strip()
-
-    # ── Step 7: Language ──
+    # ── Step 6: Language ──
     languages = list(LANGUAGE_PRESETS.items())
     print()
     print("  Response language:")
@@ -2335,7 +2286,7 @@ def reconfigure_wizard(supervisor=False):
 
     language_id, _ = languages[lidx]
 
-    # ── Step 8: Docker Sandbox ──
+    # ── Step 6: Docker Sandbox ──
     sandbox_enabled = current_sandbox
     print()
     docker_status = check_docker_available()
@@ -2370,14 +2321,13 @@ def reconfigure_wizard(supervisor=False):
         print("  Sandbox execution will be disabled.")
         sandbox_enabled = False
 
-    # ── Step 9: Confirm ──
+    # ── Step 7: Confirm ──
     print()
     print("  Reconfigure Summary")
     print("  " + "─" * 30)
     print(f"  Provider       : {provider_cfg['label']}")
     print(f"  Base URL       : {base_url}")
     print(f"  Model          : {model_name}")
-    print(f"  Style          : {tone_cfg['label']}")
     print(f"  Language       : {LANGUAGE_PRESETS[language_id]['label']}")
     print(f"  Sandbox        : {'Enabled' if sandbox_enabled else 'Disabled'}")
     print()
@@ -2398,8 +2348,6 @@ def reconfigure_wizard(supervisor=False):
         model_name=model_name,
         base_url=base_url,
         api_key=api_key,
-        tone=tone_id,
-        custom_tone_text=custom_tone_text,
         language=language_id,
         sandbox_enabled=sandbox_enabled,
     )
@@ -2412,7 +2360,7 @@ def reconfigure_wizard(supervisor=False):
     print("  Platform reconfigured successfully.")
     print()
 
-    # ── Step 10: Optional password change ──
+    # ── Step 8: Optional password change ──
     try:
         import config
 
@@ -2468,8 +2416,7 @@ def reconfigure_wizard(supervisor=False):
         if pw1 != pw2:
             print("  Error: Passwords do not match. Try again.")
             continue
-        new_hash = generate_password_hash(pw1)
-        from backend.setup import _update_env_var
+        new_hash = generate_password_hash(pw1, method="pbkdf2:sha256")
 
         _update_env_var(env_path, "ADMIN_PASSWORD_HASH", new_hash)
         print("  Password set successfully.")
@@ -2478,29 +2425,13 @@ def reconfigure_wizard(supervisor=False):
 
 
 def _update_env_var(env_path, key, value):
-    """Update or add an environment variable in a .env file."""
-    if not os.path.exists(env_path):
-        with open(env_path, "w") as f:
-            f.write(f"{key}={value}\n")
-        return
+    """Update or add an environment variable in a .env file.
 
-    with open(env_path, "r") as f:
-        lines = f.readlines()
-
-    found = False
-    for i, line in enumerate(lines):
-        if line.startswith(f"{key}=") or line.startswith(f"{key} "):
-            lines[i] = f"{key}={value}\n"
-            found = True
-            break
-
-    if not found:
-        if lines and not lines[-1].endswith("\n"):
-            lines.append("\n")
-        lines.append(f"{key}={value}\n")
-
-    with open(env_path, "w") as f:
-        f.writelines(lines)
+    Delegates to backend.setup._update_env_var which uses atomic
+    write (write-to-temp-then-rename) to prevent partial .env writes.
+    """
+    from backend.setup import _update_env_var as _impl
+    _impl(env_path, key, value)
 
 
 # ─── Update / Self-Update ──────────────────────────────────────────────────────
@@ -2545,6 +2476,14 @@ def update_server(
     cfg_path = os.path.join(ROOT, "supervisor", "config.json")
     cfg = sup.load_config(cfg_path)
     app_root = cfg["app_root"]
+
+    # Update root project first to keep CLI/supervisor code up-to-date
+    print("Updating root project from origin/main...")
+    rc, out, err = sup._git(app_root, ['pull', '--ff-only', 'origin', 'main'])
+    if rc != 0:
+        print(f"Git pull failed: {err or out}")
+        sys.exit(1)
+    print("Root project updated.")
 
     if rollback_flag:
         print("Rolling back to previous release...")
@@ -3179,6 +3118,46 @@ def doctor_command(quick=False):
     return 0 if failed == 0 else 1
 
 
+# ─── Sandbox Management ───────────────────────────────────────────────────────
+
+
+def clear_sandbox():
+    """Destroy all running evonic sandbox containers (force sweep)."""
+    result = subprocess.run(
+        ['docker', 'ps', '--filter', 'label=evonic.managed=1', '--format', '{{.Names}}'],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f'Error querying Docker: {result.stderr.strip()}')
+        sys.exit(1)
+
+    names = [n.strip() for n in result.stdout.splitlines() if n.strip()]
+    if not names:
+        print('No evonic sandbox containers running.')
+        return
+
+    print(f'Found {len(names)} sandbox container(s):')
+    for name in names:
+        print(f'  {name}')
+    print()
+
+    destroyed = 0
+    failed = 0
+    for name in names:
+        rm = subprocess.run(['docker', 'rm', '-f', name], capture_output=True, text=True)
+        if rm.returncode == 0:
+            print(f'  ✓ Destroyed {name}')
+            destroyed += 1
+        else:
+            print(f'  ✗ Failed to destroy {name}: {rm.stderr.strip()}')
+            failed += 1
+
+    print()
+    print(f'Done: {destroyed} destroyed, {failed} failed.')
+    if failed:
+        sys.exit(1)
+
+
 # ─── Channel Management ───────────────────────────────────────────────────────
 
 
@@ -3202,8 +3181,947 @@ def channel_approve(pair_code):
     success = db.approve_pending(pending["id"])
     if success:
         print(
-            f"✅ User {pending['external_user_id']} berhasil ditambahkan ke allowlist"
+            f"✅ User {pending['external_user_id']} has been added to the allowlist"
         )
     else:
         print("❌ Failed to approve pairing request.")
         sys.exit(1)
+
+
+# ============================================================
+# Backup & Restore System
+# ============================================================
+
+import hashlib
+import json as _json
+import sqlite3
+import tarfile
+import glob
+import shutil
+import getpass
+from datetime import datetime as _datetime
+
+try:
+    from backend.version import get_version as _get_evonic_version
+except ImportError:
+    def _get_evonic_version():
+        return _datetime.now().strftime("%Y%m%d")
+
+# Encryption support (pure Python AES-256-GCM)
+try:
+    from cli.backup_crypto import encrypt_file_aes256gcm, decrypt_file_aes256gcm
+    _ENCRYPTION_AVAILABLE = True
+except ImportError:
+    _ENCRYPTION_AVAILABLE = False
+
+# ---------------------------------------------------------------------------
+# Backup source definitions
+# ---------------------------------------------------------------------------
+# Each entry: (relative_path_from_root, description, is_db, is_glob)
+# is_db: use sqlite3.backup() for atomic snapshot
+# is_glob: expand glob pattern
+
+def _build_backup_sources():
+    """Return the list of backup sources as (rel_path, label, is_db, is_glob)."""
+    sources = [
+        # 1. Agent runtime data
+        ("agents/", "Agent runtime data", False, True),
+        # 2. Shared agent KB files
+        ("agents/shared/kb/", "Shared agent KB", False, True),
+        # 3. Agent artifacts (shared/agents/<id>/artifacts/)
+        ("shared/agents/", "Agent artifacts", False, True),
+        # 4. Main platform DB (with WAL files)
+        ("shared/db/evonic.db", "Main platform DB (evonic)", True, False),
+        ("shared/db/evonic.db-wal", "Main DB WAL", False, False),
+        ("shared/db/evonic.db-shm", "Main DB SHM", False, False),
+        # 5. Plugin databases
+        ("shared/data/db/plugins/*.db", "Plugin databases", True, True),
+        # 6. Avatars
+        ("shared/avatars/", "Agent avatars", False, True),
+        # 7. Environment configs
+        (".env", "Root .env config", False, False),
+        ("shared/.env", "Shared .env config", False, False),
+        # 8. Update state
+        ("shared/update/update_state.json", "Update state", False, False),
+        # 9. Server log
+        ("shared/run/server.log", "Server runtime log", False, False),
+        # 10. Plugin data dirs
+        ("plugins/", "Plugin data directories", False, True),
+        # 11. Plugin configs (handled separately via pattern)
+        ("plugins/*/config.json", "Plugin configurations", False, True),
+        # 12. Skill config
+        ("skills/config.json", "Skill configuration", False, False),
+        # 13. SSH keys
+        ("keys/", "SSH keys", False, True),
+        # 14. Plan files
+        ("plan/", "Agent plan files", False, True),
+    ]
+    return sources
+
+
+# Excluded paths (relative to ROOT)
+_EXCLUDED_PATTERNS = [
+    "backend/", "cli/", "app.py", "config.py", "routes/", "releases/", "current/",
+    "plugins/",  # source code excluded; data + config.json included via specific patterns
+    "skills/",   # source code excluded; config.json included via specific pattern
+    "skills/*/.git/", "shared/data/icd10_*",
+    ".git/", ".venv/", "__pycache__/", "*.pyc",
+    "logs/", ".claude/", ".claude/settings.local.json",
+]
+
+
+def _should_exclude(rel_path, extra_excludes=None):
+    """Check if a relative path matches any exclusion pattern."""
+    import fnmatch
+    all_excludes = list(_EXCLUDED_PATTERNS)
+    if extra_excludes:
+        all_excludes.extend(extra_excludes)
+    normalized = rel_path.replace("\\", "/").rstrip("/")
+    for pat in all_excludes:
+        pat = pat.replace("\\", "/").rstrip("/")
+        if normalized.startswith(pat.rstrip("/") + "/") or normalized == pat.rstrip("/"):
+            return True
+        if fnmatch.fnmatch(normalized, pat):
+            return True
+        # Also match individual files in excluded dirs
+        for part in normalized.split("/"):
+            if fnmatch.fnmatch(part, pat):
+                return True
+    return False
+
+
+def _should_exclude_file(filepath, extra_excludes=None):
+    """Check if a specific file should be excluded."""
+    # Exclude plugin source files but keep data/ and config.json
+    if "/plugins/" in filepath:
+        plugin_parts = filepath.split("/plugins/", 1)
+        if len(plugin_parts) == 2:
+            inner = plugin_parts[1]
+            # Keep data/ directories and config.json
+            if inner.startswith("data/") or inner.endswith("/config.json") or inner == "config.json":
+                return False
+            return True
+    
+    # Exclude skill source files but keep config.json
+    if "/skills/" in filepath:
+        skill_parts = filepath.split("/skills/", 1)
+        if len(skill_parts) == 2:
+            inner = skill_parts[1]
+            if inner == "config.json":
+                return False
+            if "/" in inner:
+                sub = inner.split("/")[0]
+                if inner == f"{sub}/config.json":
+                    return False
+            return True
+    
+    return _should_exclude(filepath, extra_excludes)
+
+
+# ---------------------------------------------------------------------------
+# SHA-256 utilities
+# ---------------------------------------------------------------------------
+
+def _sha256_file(filepath):
+    """Compute SHA-256 hash of a file. Returns hex string."""
+    h = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        while True:
+            chunk = f.read(65536)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _sha256_bytes(data):
+    """Compute SHA-256 hash of bytes."""
+    return hashlib.sha256(data).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Database utilities
+# ---------------------------------------------------------------------------
+
+def _wal_checkpoint(db_path):
+    """Run WAL checkpoint on a SQLite database to flush pending writes."""
+    if not os.path.exists(db_path):
+        return
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.close()
+    except Exception:
+        pass
+
+
+def _snapshot_db(db_path, staging_path):
+    """Create atomic zero-downtime snapshot of SQLite DB using backup API."""
+    if not os.path.exists(db_path):
+        return False
+    try:
+        src = sqlite3.connect(db_path)
+        dst = sqlite3.connect(staging_path)
+        src.backup(dst)
+        src.close()
+        dst.close()
+        return True
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Source collection
+# ---------------------------------------------------------------------------
+
+def _collect_files_for_source(rel_pattern, is_glob, staging_dir, quiet=False):
+    """
+    Collect files matching a source pattern into the staging directory.
+    Returns list of (rel_path, abs_src_path, abs_staging_path).
+    """
+    collected = []
+    abs_pattern = os.path.join(ROOT, rel_pattern)
+
+    if is_glob and ("*" in rel_pattern or "?" in rel_pattern):
+        # Glob expansion
+        matches = glob.glob(abs_pattern, recursive=False)
+        for match in sorted(matches):
+            rel = os.path.relpath(match, ROOT)
+            if _should_exclude_file(rel):
+                continue
+            if os.path.isfile(match):
+                dst = os.path.join(staging_dir, rel)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy2(match, dst)
+                collected.append((rel, match, dst))
+    elif is_glob and os.path.isdir(abs_pattern):
+        # Directory: walk recursively
+        for dirpath, dirnames, filenames in os.walk(abs_pattern):
+            # Skip excluded dirs
+            dirnames[:] = [d for d in dirnames if not _should_exclude(
+                os.path.relpath(os.path.join(dirpath, d), ROOT)
+            )]
+            for fname in sorted(filenames):
+                src = os.path.join(dirpath, fname)
+                rel = os.path.relpath(src, ROOT)
+                if _should_exclude_file(rel):
+                    continue
+                dst = os.path.join(staging_dir, rel)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy2(src, dst)
+                collected.append((rel, src, dst))
+    elif os.path.isfile(abs_pattern):
+        # Single file
+        rel = rel_pattern
+        if _should_exclude_file(rel):
+            return collected
+        dst = os.path.join(staging_dir, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        # DB files get special treatment via _snapshot_db
+        shutil.copy2(abs_pattern, dst)
+        collected.append((rel, abs_pattern, dst))
+
+    return collected
+
+
+# ---------------------------------------------------------------------------
+# Manifest
+# ---------------------------------------------------------------------------
+
+def _create_manifest(staging_dir, file_list, version, archive_sha256=None):
+    """
+    Create backup-manifest.json with metadata, file list, and SHAs.
+    file_list: list of (rel_path, staging_path, file_size)
+    """
+    manifest = {
+        "version": "1.0",
+        "evonic_version": version,
+        "created_at": _datetime.now().isoformat(),
+        "created_by": "evonic backup",
+        "file_count": len(file_list),
+        "total_size_bytes": sum(info[2] for info in file_list),
+        "archive_sha256": archive_sha256,
+        "files": []
+    }
+
+    for rel_path, staging_path, file_size in file_list:
+        sha = _sha256_file(staging_path)
+        manifest["files"].append({
+            "path": rel_path,
+            "size_bytes": file_size,
+            "sha256": sha,
+        })
+
+    manifest_path = os.path.join(staging_dir, "backup-manifest.json")
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        _json.dump(manifest, f, indent=2)
+
+    return manifest_path, manifest
+
+
+def _update_manifest_sha256(archive_path, sha256_value):
+    """Re-open tar archive and update the manifest's archive_sha256 field."""
+    try:
+        with tarfile.open(archive_path, "r:gz") as tar:
+            # Extract manifest
+            members = tar.getmembers()
+            for m in members:
+                if m.name.endswith("backup-manifest.json"):
+                    manifest_data = _json.loads(tar.extractfile(m).read().decode("utf-8"))
+                    manifest_data["archive_sha256"] = sha256_value
+                    manifest_bytes = _json.dumps(manifest_data, indent=2).encode("utf-8")
+                    break
+            else:
+                return False
+
+        # Replace manifest in archive
+        # tarfile doesn't support in-place update, so we rebuild
+        import io
+        new_archive = archive_path + ".tmp"
+        with tarfile.open(archive_path, "r:gz") as tar_in:
+            with tarfile.open(new_archive, "w:gz", format=tarfile.PAX_FORMAT) as tar_out:
+                for member in tar_in.getmembers():
+                    if member.name.endswith("backup-manifest.json"):
+                        # Create a new TarInfo for the updated manifest
+                        info = tarfile.TarInfo(name=member.name)
+                        info.size = len(manifest_bytes)
+                        info.mtime = member.mtime
+                        tar_out.addfile(info, io.BytesIO(manifest_bytes))
+                    else:
+                        fobj = tar_in.extractfile(member)
+                        tar_out.addfile(member, fobj)
+        os.replace(new_archive, archive_path)
+        return True
+    except Exception as e:
+        print(f"Warning: Could not update manifest SHA-256 in archive: {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Archive utilities
+# ---------------------------------------------------------------------------
+
+def _create_archive(staging_dir, output_path, fmt="gz"):
+    """Create compressed tar archive from staging directory."""
+    mode_map = {"gz": "w:gz", "bz2": "w:bz2", "zip": None}
+    if fmt == "zip":
+        # Use shutil for zip
+        base = output_path
+        if base.endswith(".tar.gz"):
+            base = base[:-7] + ".zip"
+        elif base.endswith(".tar.bz2"):
+            base = base[:-8] + ".zip"
+        else:
+            base = base + ".zip"
+        shutil.make_archive(base.replace(".zip", ""), "zip", staging_dir)
+        return base
+
+    mode = mode_map.get(fmt, "w:gz")
+    with tarfile.open(output_path, mode, format=tarfile.PAX_FORMAT) as tar:
+        for root, dirs, files in os.walk(staging_dir):
+            for fname in files:
+                full_path = os.path.join(root, fname)
+                arcname = os.path.relpath(full_path, staging_dir)
+                tar.add(full_path, arcname=arcname)
+    return output_path
+
+
+def _archive_sha256(archive_path):
+    """Compute SHA-256 of the archive file."""
+    return _sha256_file(archive_path)
+
+
+# ---------------------------------------------------------------------------
+# Verify
+# ---------------------------------------------------------------------------
+
+def _read_manifest_from_archive(archive_path):
+    """Read backup-manifest.json from inside a tar.gz archive."""
+    if not os.path.exists(archive_path):
+        return None, "Backup file not found"
+    
+    try:
+        with tarfile.open(archive_path, "r:*") as tar:
+            for member in tar.getmembers():
+                if member.name.endswith("backup-manifest.json"):
+                    return _json.loads(tar.extractfile(member).read().decode("utf-8")), None
+            return None, "No backup-manifest.json found in archive"
+    except tarfile.ReadError as e:
+        return None, f"Invalid or corrupt archive: {e}"
+    except Exception as e:
+        return None, f"Error reading archive: {e}"
+
+
+def _verify_archive(archive_path, manifest):
+    """Verify all files in archive match manifest SHAs."""
+    if not os.path.exists(archive_path):
+        return False, "Archive not found"
+    
+    # Note: archive-level SHA-256 is stored in manifest as metadata but
+    # cannot be self-referentially verified. File-level SHA-256 verification
+    # provides equivalent integrity guarantees for all backed-up data.
+    
+    # Extract to temp and verify each file
+    tmpdir = tempfile.mkdtemp(prefix="evonic-verify-")
+    try:
+        with tarfile.open(archive_path, "r:*") as tar:
+            tar.extractall(tmpdir, filter="data")
+        
+        for finfo in manifest.get("files", []):
+            fpath = os.path.join(tmpdir, finfo["path"])
+            if not os.path.exists(fpath):
+                return False, f"Missing file in archive: {finfo['path']}"
+            computed = _sha256_file(fpath)
+            expected = finfo["sha256"]
+            if computed != expected:
+                return False, f"SHA-256 mismatch: {finfo['path']} (expected {expected}, got {computed})"
+        
+        return True, "All files verified successfully"
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _list_archive_contents(archive_path, manifest=None):
+    """List contents of a backup archive."""
+    if manifest is None:
+        manifest, err = _read_manifest_from_archive(archive_path)
+        if err:
+            print(f"Error: {err}")
+            return
+    
+    print(f"Backup: {os.path.basename(archive_path)}")
+    print(f"Created: {manifest.get('created_at', 'unknown')}")
+    print(f"Evonic version: {manifest.get('evonic_version', 'unknown')}")
+    print(f"Files: {manifest.get('file_count', 0)}")
+    print(f"Total size: {manifest.get('total_size_bytes', 0):,} bytes")
+    print(f"Archive SHA-256: {manifest.get('archive_sha256', 'not present')}")
+    print()
+    print(f"{'Path':<60} {'Size':>12} {'SHA-256'}")
+    print("-" * 140)
+    for finfo in manifest.get("files", []):
+        sha_short = finfo["sha256"][:16] + "..."
+        print(f"{finfo['path']:<60} {finfo['size_bytes']:>12,} {sha_short}")
+
+
+# ---------------------------------------------------------------------------
+# Path traversal safety
+# ---------------------------------------------------------------------------
+
+def _safe_extract(tar, dest_dir):
+    """Extract tar archive safely, preventing path traversal."""
+    dest_dir = os.path.abspath(dest_dir)
+    for member in tar.getmembers():
+        # Resolve the target path
+        target = os.path.abspath(os.path.join(dest_dir, member.name))
+        # Reject any path outside dest_dir
+        if not target.startswith(dest_dir + os.sep) and target != dest_dir:
+            print(f"WARNING: Rejecting path traversal: {member.name}")
+            continue
+        if member.isdir():
+            os.makedirs(target, exist_ok=True)
+        elif member.isfile():
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with tar.extractfile(member) as src, open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+        # Handle symlinks (reject for safety)
+        elif member.issym() or member.islnk():
+            print(f"WARNING: Skipping symlink/hardlink in backup: {member.name}")
+
+
+# ---------------------------------------------------------------------------
+# Rollback system
+# ---------------------------------------------------------------------------
+
+def _create_rollback_copies(file_list):
+    """Create .bak copies of all files that will be overwritten during restore."""
+    rollbacks = []
+    for rel_path in file_list:
+        target = os.path.join(ROOT, rel_path)
+        if os.path.exists(target):
+            bak = target + ".evonic-rollback"
+            try:
+                if os.path.isdir(target):
+                    shutil.copytree(target, bak, symlinks=False)
+                else:
+                    shutil.copy2(target, bak)
+                rollbacks.append((target, bak))
+            except Exception as e:
+                print(f"Warning: Could not create rollback for {rel_path}: {e}")
+    return rollbacks
+
+
+def _rollback_restore(rollbacks):
+    """Restore all .bak copies (reverse the restore)."""
+    restored = 0
+    failed = 0
+    for target, bak in rollbacks:
+        try:
+            if os.path.isdir(bak):
+                if os.path.exists(target):
+                    shutil.rmtree(target, ignore_errors=True)
+                shutil.move(bak, target)
+            else:
+                shutil.move(bak, target)
+            restored += 1
+        except Exception as e:
+            print(f"Rollback failed for {target}: {e}")
+            failed += 1
+    return restored, failed
+
+
+def _cleanup_rollback_copies(rollbacks):
+    """Remove leftover .bak files after successful restore."""
+    for _, bak in rollbacks:
+        if os.path.exists(bak):
+            try:
+                if os.path.isdir(bak):
+                    shutil.rmtree(bak, ignore_errors=True)
+                else:
+                    os.remove(bak)
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# Post-restore validation
+# ---------------------------------------------------------------------------
+
+def _validate_restored_db():
+    """Validate the restored database integrity."""
+    db_path = os.path.join(ROOT, "shared", "db", "evonic.db")
+    if not os.path.exists(db_path):
+        return False, "Database file not found after restore"
+
+    try:
+        conn = sqlite3.connect(db_path)
+        
+        # Check agent count
+        cur = conn.execute("SELECT count(*) FROM agents")
+        count = cur.fetchone()[0]
+        if count == 0:
+            conn.close()
+            return False, "Database has zero agents after restore"
+        
+        # Integrity check
+        cur = conn.execute("PRAGMA integrity_check")
+        result = cur.fetchone()[0]
+        conn.close()
+        
+        if result.lower() != "ok":
+            return False, f"Database integrity check failed: {result}"
+        
+        return True, f"Database valid ({count} agents, integrity OK)"
+    except Exception as e:
+        return False, f"Database validation error: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Backup command
+# ---------------------------------------------------------------------------
+
+def backup_command(output=None, fmt="gz", quiet=False, exclude=None, encrypt=False):
+    """Create a full Evonic backup archive."""
+    
+    # Parse options
+    extra_excludes = list(exclude) if exclude else []
+    
+    # Get version
+    version = _get_evonic_version()
+    
+    # Generate default output filename
+    timestamp = _datetime.now().strftime("%Y%m%d-%H%M")
+    ext_map = {"gz": ".tar.gz", "bz2": ".tar.bz2", "zip": ".zip"}
+    ext = ext_map.get(fmt, ".tar.gz")
+    default_name = f"evonic-backup-{timestamp}{ext}"
+
+    if output is None:
+        output = default_name
+    elif os.path.isdir(output):
+        # -o points to a directory — place backup inside with default filename
+        output = os.path.join(output, default_name)
+
+    output = os.path.abspath(output)
+    
+    if not quiet:
+        print(f"Evonic Backup v{version}")
+        print(f"Output: {output}")
+        print(f"Format: {fmt}")
+        if encrypt:
+            print("Encryption: AES-256-GCM (passphrase will be prompted)")
+        print()
+    
+    # Handle encryption passphrase
+    passphrase = None
+    if encrypt:
+        if not _ENCRYPTION_AVAILABLE:
+            print("Error: Encryption not available (backup_crypto module not found)")
+            sys.exit(1)
+        passphrase = getpass.getpass("Enter encryption passphrase: ")
+        confirm = getpass.getpass("Confirm encryption passphrase: ")
+        if passphrase != confirm:
+            print("Error: Passphrases do not match")
+            sys.exit(1)
+        if len(passphrase) < 8:
+            print("Error: Passphrase must be at least 8 characters")
+            sys.exit(1)
+    
+    # Step 1: WAL checkpoint on main DB
+    if not quiet:
+        print("Running WAL checkpoint on main database...")
+    evonic_db = os.path.join(ROOT, "shared", "db", "evonic.db")
+    _wal_checkpoint(evonic_db)
+    
+    # Also checkpoint plugin databases
+    plugin_db_pattern = os.path.join(ROOT, "shared", "data", "db", "plugins", "*.db")
+    for pdb in glob.glob(plugin_db_pattern):
+        _wal_checkpoint(pdb)
+    
+    # Step 2: Create staging directory
+    staging_dir = tempfile.mkdtemp(prefix="evonic-backup-")
+    if not quiet:
+        print(f"Staging directory: {staging_dir}")
+    
+    try:
+        # Step 3: Collect all sources
+        sources = _build_backup_sources()
+        all_files = []  # (rel_path, staging_path, size_bytes)
+        db_files_collected = []  # DB files needing snapshot
+        
+        for rel_pattern, label, is_db, is_glob in sources:
+            if is_db:
+                # DB files get atomic snapshot
+                abs_src = os.path.join(ROOT, rel_pattern)
+                if os.path.exists(abs_src):
+                    staging_path = os.path.join(staging_dir, rel_pattern)
+                    os.makedirs(os.path.dirname(staging_path), exist_ok=True)
+                    if not quiet:
+                        print(f"  Snapshot DB: {rel_pattern}")
+                    if _snapshot_db(abs_src, staging_path):
+                        size = os.path.getsize(staging_path)
+                        all_files.append((rel_pattern, staging_path, size))
+                    else:
+                        if not quiet:
+                            print(f"  Warning: Failed to snapshot {rel_pattern}")
+            else:
+                # Regular files/directories
+                if not quiet:
+                    print(f"  Collecting: {label}")
+                collected = _collect_files_for_source(
+                    rel_pattern, is_glob, staging_dir, quiet
+                )
+                for rel, src, dst in collected:
+                    if _should_exclude_file(rel, extra_excludes):
+                        continue
+                    size = os.path.getsize(src)
+                    all_files.append((rel, dst, size))
+        
+        # Deduplicate (in case glob patterns overlap)
+        seen = set()
+        unique_files = []
+        for rel, path, size in all_files:
+            if rel not in seen:
+                seen.add(rel)
+                unique_files.append((rel, path, size))
+        all_files = unique_files
+        
+        if not all_files:
+            print("Error: No files collected. Check that Evonic is properly installed.")
+            sys.exit(1)
+        
+        if not quiet:
+            print(f"\nCollected {len(all_files)} files, "
+                  f"{sum(f[2] for f in all_files):,} bytes total")
+        
+        # Step 4: Create manifest
+        if not quiet:
+            print("Creating manifest...")
+        manifest_path, manifest = _create_manifest(staging_dir, all_files, version)
+        # Add manifest itself to the file list for archive inclusion
+        manifest_size = os.path.getsize(manifest_path)
+        manifest_rel = "backup-manifest.json"
+        all_files.append((manifest_rel, manifest_path, manifest_size))
+        
+        # Step 5: Create tar archive
+        if not quiet:
+            print(f"Creating archive ({fmt})...")
+        
+        if encrypt:
+            # Create unencrypted archive first, then encrypt
+            tmp_archive = output + ".plain"
+            archive_path = _create_archive(staging_dir, tmp_archive, fmt)
+            archive_sha = _archive_sha256(archive_path)
+            
+            # Update manifest with archive SHA
+            _update_manifest_sha256(archive_path, archive_sha)
+            
+            # Encrypt
+            if not quiet:
+                print("Encrypting archive...")
+            encrypt_file_aes256gcm(archive_path, output, passphrase)
+            os.remove(archive_path)
+            # Recompute SHA of encrypted file
+            archive_sha = _archive_sha256(output)
+        else:
+            archive_path = _create_archive(staging_dir, output, fmt)
+            archive_sha = _archive_sha256(archive_path)
+            # Update manifest with archive SHA, then recompute
+            _update_manifest_sha256(archive_path, archive_sha)
+            archive_sha = _archive_sha256(output)
+        
+        archive_size = os.path.getsize(output)
+        
+        print(f"\n  Backup complete!")
+        print(f"  Path:      {output}")
+        print(f"  Size:      {archive_size:,} bytes")
+        print(f"  SHA-256:   {archive_sha}")
+        print(f"  Files:     {len(all_files)}")
+        
+    finally:
+        # Step 6: Cleanup staging
+        if not quiet:
+            print("Cleaning up staging directory...")
+        shutil.rmtree(staging_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Restore command
+# ---------------------------------------------------------------------------
+
+def restore_command(backup_file, dry_run=False, force=False, no_restart=False):
+    """Restore Evonic from a backup archive."""
+    
+    backup_file = os.path.abspath(backup_file)
+    
+    if not os.path.exists(backup_file):
+        print(f"Error: Backup file not found: {backup_file}")
+        sys.exit(1)
+    
+    print(f"Evonic Restore")
+    print(f"Backup file: {backup_file}")
+    print()
+    
+    # Step 1: Verify archive
+    print("Verifying backup...")
+    manifest, err = _read_manifest_from_archive(backup_file)
+    if err:
+        print(f"Error: {err}")
+        sys.exit(1)
+    
+    verified, verify_msg = _verify_archive(backup_file, manifest)
+    if not verified:
+        print(f"Error: Verification failed: {verify_msg}")
+        print("The backup may be corrupted. Restore aborted.")
+        sys.exit(1)
+    print(f"Verification: OK ({manifest.get('file_count', 0)} files verified)")
+    
+    # Check if encrypted (look for encryption header)
+    is_encrypted = False
+    try:
+        with open(backup_file, "rb") as f:
+            header = f.read(4)
+            # tar.gz starts with 0x1f 0x8b (gzip magic)
+            if header[:2] != b"\x1f\x8b":
+                is_encrypted = True
+    except Exception:
+        pass
+    
+    # If encrypted, prompt for passphrase
+    if is_encrypted:
+        if not _ENCRYPTION_AVAILABLE:
+            print("Error: File appears encrypted but encryption module is not available")
+            sys.exit(1)
+        passphrase = getpass.getpass("Enter decryption passphrase: ")
+        decrypted_path = backup_file + ".decrypted"
+        try:
+            print("Decrypting...")
+            decrypt_file_aes256gcm(backup_file, decrypted_path, passphrase)
+            backup_file = decrypted_path
+            # Re-verify decrypted archive
+            manifest, err = _read_manifest_from_archive(backup_file)
+            if err:
+                print(f"Error reading decrypted archive: {err}")
+                sys.exit(1)
+        except ValueError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+    else:
+        decrypted_path = None
+    
+    # Step 2: Show contents
+    print()
+    _list_archive_contents(backup_file, manifest)
+    
+    # Step 3: Dry run handling
+    if dry_run:
+        print("\nDry run complete. No changes were made.")
+        if decrypted_path:
+            os.remove(decrypted_path)
+        return
+    
+    # Step 4: Confirmation
+    if not force:
+        print(f"\nThis will stop the server and restore {manifest.get('file_count', 0)} files.")
+        response = input("Continue? [y/N] ").strip().lower()
+        if response not in ("y", "yes"):
+            print("Restore cancelled.")
+            if decrypted_path:
+                os.remove(decrypted_path)
+            return
+    
+    # Step 5: Extract to staging
+    staging_dir = tempfile.mkdtemp(prefix="evonic-restore-")
+    print(f"\nExtracting to staging: {staging_dir}")
+    
+    try:
+        with tarfile.open(backup_file, "r:*") as tar:
+            _safe_extract(tar, staging_dir)
+        
+        # Read manifest from staging
+        manifest_path = None
+        for root, dirs, files in os.walk(staging_dir):
+            if "backup-manifest.json" in files:
+                manifest_path = os.path.join(root, "backup-manifest.json")
+                break
+        
+        if manifest_path is None:
+            print("Error: No manifest found in extracted archive")
+            sys.exit(1)
+        
+        with open(manifest_path, "r") as f:
+            staged_manifest = _json.load(f)
+        
+        file_list = staged_manifest.get("files", [])
+        
+        # Step 6: Create rollback copies
+        print("Creating rollback copies...")
+        file_paths = [f["path"] for f in file_list if f["path"] != "backup-manifest.json"]
+        rollbacks = _create_rollback_copies(file_paths)
+        print(f"  {len(rollbacks)} rollback copies created")
+        
+        # Step 7: Stop server
+        # Find the extracted manifest's source directory
+        # The staging dir has the same structure as ROOT
+        extract_root = staging_dir
+        if manifest_path:
+            extract_root = os.path.dirname(manifest_path)
+        
+        print("Stopping server...")
+        stop_server()
+        time.sleep(2)
+        
+        # Step 8: Restore files
+        print(f"Restoring {len(file_paths)} files...")
+        restored = 0
+        skipped = 0
+        for finfo in file_list:
+            rel_path = finfo["path"]
+            if rel_path == "backup-manifest.json":
+                continue
+            src = os.path.join(extract_root, rel_path)
+            dst = os.path.join(ROOT, rel_path)
+            if os.path.exists(src):
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                try:
+                    shutil.copy2(src, dst)
+                    restored += 1
+                except Exception as e:
+                    print(f"  Error restoring {rel_path}: {e}")
+                    skipped += 1
+        
+        print(f"  {restored} files restored" + (f", {skipped} skipped" if skipped else ""))
+        
+        # Step 9: Post-restore validation
+        print("Validating restored database...")
+        valid, msg = _validate_restored_db()
+        
+        if not valid:
+            print(f"ERROR: {msg}")
+            print("Auto-rolling back restore...")
+            _rollback_restore(rollbacks)
+            print("Rollback complete. System is in pre-restore state.")
+            sys.exit(1)
+        
+        print(f"  {msg}")
+        
+        # Cleanup rollback copies
+        _cleanup_rollback_copies(rollbacks)
+        
+        # Step 10: Restart server
+        if not no_restart:
+            print("Restarting server...")
+            start_server(daemon=True)
+            time.sleep(3)
+            
+            # Health check
+            pid = _get_pid()
+            if _is_running(pid):
+                print(f"Server restarted successfully (PID: {pid})")
+            else:
+                print("Warning: Server may not have started. Check 'evonic status'.")
+        else:
+            print("Server restart skipped (--no-restart). Run 'evonic start -d' to start.")
+        
+        print("\n  Restore complete!")
+        
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        if decrypted_path and os.path.exists(decrypted_path):
+            os.remove(decrypted_path)
+
+
+# ---------------------------------------------------------------------------
+# Verify command
+# ---------------------------------------------------------------------------
+
+def verify_command(backup_file):
+    """Verify a backup archive's integrity against its manifest."""
+    backup_file = os.path.abspath(backup_file)
+    
+    if not os.path.exists(backup_file):
+        print(f"Error: Backup file not found: {backup_file}")
+        sys.exit(1)
+    
+    print(f"Verifying backup: {backup_file}")
+    print()
+    
+    manifest, err = _read_manifest_from_archive(backup_file)
+    if err:
+        print(f"ERROR: {err}")
+        sys.exit(1)
+    
+    print(f"Backup metadata:")
+    print(f"  Created:      {manifest.get('created_at', 'unknown')}")
+    print(f"  Version:      {manifest.get('evonic_version', 'unknown')}")
+    print(f"  Files:        {manifest.get('file_count', 0)}")
+    print(f"  Total size:   {manifest.get('total_size_bytes', 0):,} bytes")
+    print(f"  Archive SHA:  {manifest.get('archive_sha256', 'not present')}")
+    print()
+    
+    verified, msg = _verify_archive(backup_file, manifest)
+    
+    if verified:
+        print("VERIFICATION PASSED")
+        print(f"All {manifest.get('file_count', 0)} files verified.")
+    else:
+        print(f"VERIFICATION FAILED: {msg}")
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# List command
+# ---------------------------------------------------------------------------
+
+def list_command(backup_file):
+    """List contents of a backup archive."""
+    backup_file = os.path.abspath(backup_file)
+    
+    if not os.path.exists(backup_file):
+        print(f"Error: Backup file not found: {backup_file}")
+        sys.exit(1)
+    
+    manifest, err = _read_manifest_from_archive(backup_file)
+    if err:
+        print(f"Error: {err}")
+        sys.exit(1)
+    
+    _list_archive_contents(backup_file, manifest)

@@ -25,9 +25,13 @@ Usage:
     ms.serialize()                        # JSON string for DB persistence
     AgentState.deserialize(json_str)     # restore from DB
 """
+from __future__ import annotations
+
+from typing import Optional, Union
 
 import json
 import os
+import re
 
 # Project root: two levels up from this file (backend/agent_state.py → project root)
 _PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
@@ -35,7 +39,7 @@ _PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
 # Maximum characters of plan file content injected into each LLM call
 _PLAN_FILE_MAX_CHARS = 4000
 
-GUARDED_TOOLS = {"write_file", "patch", "file_edit", "file_create"}
+GUARDED_TOOLS = {"write_file", "str_replace", "patch", "file_edit", "file_create"}
 
 VALID_MODES = {"plan", "execute"}
 
@@ -45,11 +49,57 @@ STATUS_ICON = {
     "done": "[x]",
 }
 
+# Regex to strip leading status indicators that LLMs sometimes embed in task text.
+_STATUS_PREFIX_RE = re.compile(
+    r'^(?:'
+    r'[\s]*(?:'
+    r'[\u2610\u2611\u2612\u2713\u2714\u2717\u2718\u27f3]'   # ☐☑☒✓✔✗✘⟳
+    r'|[\u23f3\u231b]'                                       # ⏳⌛
+    r'|\u2705|\u274c|\U0001f504'                             # ✅❌🔄
+    r'|\[(?:x|X| |~|DONE|done|TODO|WIP)\]'                  # [x] [ ] [~] [DONE] etc.
+    r')'
+    r')+[\s]*'
+    r'(?:#\d+[\s]*)?'                                        # optional #<id>
+)
+
+# Trailing suffixes LLMs append to indicate completion.
+_STATUS_SUFFIX_RE = re.compile(
+    r'\s*\((?:complete|completed|done|finished)\)\s*$',
+    re.IGNORECASE,
+)
+
+# Indicators that imply the task is already done.
+_DONE_INDICATORS = re.compile(
+    r'\u2705|\u2713|\u2714|\u2611|\u2612'                    # ✅✓✔☑☒
+    r'|\[(?:x|X|DONE|done)\]'
+    r'|\((?:complete|completed|done|finished)\)',
+    re.IGNORECASE,
+)
+
+
+def _sanitize_task_text(text: str) -> tuple[str, str | None]:
+    """Strip leading/trailing status indicators from task text.
+
+    Returns (cleaned_text, inferred_status) where inferred_status is
+    "done" / "in_progress" if completion markers were detected, else None.
+    """
+    raw = text
+    # Detect status before stripping
+    inferred = None
+    if _DONE_INDICATORS.search(raw):
+        inferred = "done"
+
+    cleaned = _STATUS_PREFIX_RE.sub('', raw, count=1)
+    cleaned = _STATUS_SUFFIX_RE.sub('', cleaned)
+    cleaned = cleaned.strip() or raw.strip()
+    return cleaned, inferred
+
 
 class AgentState:
     def __init__(self, mode: str = "plan", tasks: list = None, next_task_id: int = 1,
                  plan_file: str = None, states: dict = None,
-                 focus: bool = False, focus_reason: str = None):
+                 focus: bool = False, focus_reason: str = None,
+                 auto_trivial: bool = False):
         self.mode = mode
         self.tasks: list[dict] = tasks or []
         self._next_task_id = next_task_id
@@ -57,6 +107,7 @@ class AgentState:
         # Namespace-keyed state slots registered by system/plugins via the `state` tool.
         # Each slot: {state: str, data: any, blocked_tools: list|None, allowed_tools: list|None}
         self.states: dict = states or {}
+        self.auto_trivial: bool = auto_trivial  # True when classifier auto-set execute mode
         # Focus mode: when True, agent will not accept messages from other sessions.
         # Plugins (e.g. kanban) set this when starting a long-running exclusive task
         # and clear it when the task finishes. For short-term turn-level exclusivity,
@@ -66,13 +117,13 @@ class AgentState:
 
     # ── Blocking ────────────────────────────────────────────────────────────
 
-    def is_blocked(self, tool_name: str) -> bool | str:
+    def is_blocked(self, tool_name: str) -> Union[bool, str]:
         """Return True (mode block) or a string message (state block) if the tool is blocked."""
         if self.mode == "plan" and tool_name in GUARDED_TOOLS:
             return True
         return self.is_blocked_by_state(tool_name)
 
-    def is_blocked_by_state(self, tool_name: str) -> str | None:
+    def is_blocked_by_state(self, tool_name: str) -> Optional[str]:
         """Check all state slots for tool blocks. Returns a blocking message or None."""
         for ns, slot in self.states.items():
             allowed = slot.get("allowed_tools")
@@ -99,7 +150,7 @@ class AgentState:
             "allowed_tools": allowed_tools,
         }
 
-    def get_state(self, namespace: str) -> dict | None:
+    def get_state(self, namespace: str) -> Optional[dict]:
         """Get the current state slot for a namespace, or None."""
         return self.states.get(namespace)
 
@@ -157,10 +208,11 @@ class AgentState:
             self.tasks = list(done_tasks)
             self._next_task_id = max((t["id"] for t in self.tasks), default=0) + 1
             for t in tasks:
+                clean, inferred = _sanitize_task_text(str(t))
                 self.tasks.append({
                     "id": self._next_task_id,
-                    "text": str(t),
-                    "status": "pending",
+                    "text": clean,
+                    "status": inferred or "pending",
                 })
                 self._next_task_id += 1
             return {"result": f"Task list set with {len(self.tasks)} tasks ({len(done_tasks)} completed preserved).", "tasks": self._task_summary()}
@@ -168,7 +220,8 @@ class AgentState:
         if action == "add":
             if not text:
                 return {"error": "Action 'add' requires 'text'."}
-            task = {"id": self._next_task_id, "text": str(text), "status": "pending"}
+            clean, inferred = _sanitize_task_text(str(text))
+            task = {"id": self._next_task_id, "text": clean, "status": inferred or "pending"}
             self.tasks.append(task)
             self._next_task_id += 1
             return {"result": f"Task #{task['id']} added.", "task_id": task['id']}
@@ -218,6 +271,12 @@ class AgentState:
             "## Agent State",
             f"**Mode**: {mode_note}",
         ]
+
+        if self.auto_trivial and self.mode == "execute":
+            lines.append(
+                "**Auto-classified**: trivial — write tools are allowed. "
+                "If this task is actually complex, call set_mode('plan') to switch to planning mode."
+            )
 
         if self.focus:
             reason_note = f" — {self.focus_reason}" if self.focus_reason else ""
@@ -295,6 +354,7 @@ class AgentState:
             "states": self.states,
             "focus": self.focus,
             "focus_reason": self.focus_reason,
+            "auto_trivial": self.auto_trivial,
         })
 
     @classmethod
@@ -310,6 +370,7 @@ class AgentState:
                 states=obj.get("states", {}),
                 focus=obj.get("focus", False),
                 focus_reason=obj.get("focus_reason"),
+                auto_trivial=obj.get("auto_trivial", False),
             )
         except (json.JSONDecodeError, TypeError, AttributeError):
             return cls()

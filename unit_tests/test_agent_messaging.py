@@ -22,6 +22,7 @@ _mock_db = mock.MagicMock()
 _mock_db.get_agent = mock.MagicMock()
 _mock_db.get_latest_human_session = mock.MagicMock()
 _mock_db.get_session_messages = mock.MagicMock()
+_mock_db.get_web_fallback_session = mock.MagicMock(return_value=None)
 
 _mock_notifier = mock.MagicMock()
 _mock_notifier.notify_agent = mock.MagicMock()
@@ -50,6 +51,12 @@ def setup_module(module):
     # Save originals (None means absent).
     for key in _STUB_KEYS:
         _saved_modules[key] = sys.modules.get(key)
+
+    # Evict any cached agent_messaging module so tests get a fresh import
+    # with our stubs below.  Without this, test_tool_backends.py may have
+    # already loaded the module (via _discover_tool_modules) during
+    # collection with the real Database instance attached.
+    sys.modules.pop('backend.tools.agent_messaging', None)
 
     sys.modules['models.db'] = mock.MagicMock(db=_mock_db)
     sys.modules['models'] = mock.MagicMock()
@@ -424,8 +431,10 @@ class TestExecEscalateToUser(unittest.TestCase):
         human_session = {'external_user_id': 'user_123', 'channel_id': 'ch1'}
         with mock.patch('backend.tools.agent_messaging.db.get_latest_human_session',
                         return_value=human_session), \
+             mock.patch('backend.tools.agent_messaging.db.get_web_fallback_session',
+                        return_value=None), \
              mock.patch('backend.agent_runtime.notifier.notify_agent',
-                        return_value={'success': True}) as mock_notify:
+                       return_value={'success': True}) as mock_notify:
             result = self._call({'message': 'User, I need your approval.'})
         self.assertTrue(result.get('success'))
         self.assertIn('forwarded', result.get('message', ''))

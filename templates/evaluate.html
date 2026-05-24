@@ -40,7 +40,7 @@
                         <span id="status-text">{{ status.status|upper }}</span>
                     </div>
                     <span id="run-id-display" class="text-gray-400 dark:text-gray-500 text-xs{{ '' if status.run_id else ' hidden' }}">
-                        Run <code id="run-id-code" class="bg-gray-100 dark:bg-gray-700 px-1 py-0.5 rounded text-gray-600 dark:text-gray-300">#{{ "%04d"|format(status.run_info.run_id) if status.run_info else status.run_id if status.run_id else '0000' }}</code>
+                        Run <a id="run-id-link" href="/history/{{ status.run_info.run_id if status.run_info else status.run_id if status.run_id else '' }}" class="{{ 'pointer-events-none' if status.status != 'completed' else '' }}"><code id="run-id-code" class="bg-gray-100 dark:bg-gray-700 px-1 py-0.5 rounded {{ 'text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 cursor-pointer' if status.status == 'completed' else 'text-gray-600 dark:text-gray-300' }}">#{{ status.run_info.run_id if status.run_info else status.run_id if status.run_id else '' }}</code></a>
                     </span>
                     <span id="model-display" class="text-gray-500 dark:text-gray-400 text-xs{{ '' if (status.run_info and status.run_info.model_name) else ' hidden' }}">
                         <strong id="model-name-text" class="text-indigo-500 font-medium">{{ status.run_info.model_name if status.run_info and status.run_info.model_name else '' }}</strong>
@@ -455,6 +455,15 @@ function clearMatrixState() {
     document.getElementById('progress-text').textContent = `0/${totalTests} tests completed`;
 }
 
+function enableRunIdLink(runId) {
+    const link = document.getElementById('run-id-link');
+    const code = document.getElementById('run-id-code');
+    link.classList.remove('pointer-events-none');
+    link.href = '/history/' + runId;
+    code.classList.remove('text-gray-600', 'dark:text-gray-300');
+    code.classList.add('text-indigo-600', 'dark:text-indigo-400', 'hover:text-indigo-800', 'dark:hover:text-indigo-300', 'cursor-pointer');
+}
+
 function saveState(data) {
     const state = {
         run_id: data.run_id,
@@ -499,9 +508,17 @@ function loadSavedState() {
                 document.getElementById('model-display').classList.remove('hidden');
             }
             if (state.run_id) {
-                document.getElementById('run-id-code').textContent = '#' + String(state.run_id).padStart(4, '0');
+                document.getElementById('run-id-code').textContent = '#' + state.run_id;
+                document.getElementById('run-id-link').href = '/history/' + state.run_id;
                 document.getElementById('run-id-display').classList.remove('hidden');
                 currentRunId = state.run_id;
+                if (state.status === 'completed') {
+                    enableRunIdLink(state.run_id);
+                }
+            }
+            // Restore summary box on page refresh for completed evaluations
+            if (state.status === 'completed') {
+                fetchSummary();
             }
         } catch (e) {
             console.error('Error loading saved state:', e);
@@ -804,14 +821,16 @@ function updateStatus() {
         }
         // Update run ID display
         if (data.run_id) {
-            document.getElementById('run-id-code').textContent = '#' + String(data.run_id).padStart(4, '0');
+            document.getElementById('run-id-code').textContent = '#' + data.run_id;
+            document.getElementById('run-id-link').href = '/history/' + data.run_id;
             document.getElementById('run-id-display').classList.remove('hidden');
         }
-        
+
         // Save state for persistence
         saveState(data);
-        
+
         if (data.status === 'completed' || data.status === 'interrupted' || data.status === 'error') {
+            enableRunIdLink(data.run_id);
             clearInterval(pollingInterval);
             updateToggleButton(false);
             showClearButton(true);
@@ -982,7 +1001,9 @@ function colorizeLogEntry(message) {
         bold ? 'font-weight:bold' : ''
     ].filter(Boolean).join(';');
 
-    return `<div class="log-entry"${style ? ` style="${style}"` : ''}>${message}</div>`;
+    const escaped = escapeHtml(message);
+    const withBreaks = escaped.replace(/\n/g, '<br>');
+    return `<div class="log-entry"${style ? ` style="${style}"` : ''}>${withBreaks}</div>`;
 }
 
 function setupLogStream() {
@@ -1003,7 +1024,7 @@ function setupLogStream() {
         .then(data => {
             if (data.messages && data.messages.length > 0) {
                 for (const msg of data.messages) {
-                    const message = msg.replace(/\n/g, '<br>');
+                    const message = msg;
                     logBox.innerHTML += colorizeLogEntry(message);
                 }
                 logBox.scrollTop = logBox.scrollHeight;
@@ -1158,30 +1179,30 @@ function renderTestDetailLegacy(test) {
                 <div class="section-header">TURNS (${details.conversation_log.length})</div>
                 <div class="space-y-2">
                     ${details.conversation_log.map((turn, i) => `
-                        <div class="border border-gray-200 rounded text-xs">
-                            <div class="bg-gray-100 px-2 py-1 font-semibold text-gray-600 border-b border-gray-200">Turn ${turn.turn || i+1}</div>
+                        <div class="border border-gray-200 dark:border-gray-700 rounded text-xs">
+                            <div class="bg-gray-100 dark:bg-gray-700 px-2 py-1 font-semibold text-gray-600 dark:text-gray-300 border-b border-gray-200 dark:border-gray-600">Turn ${turn.turn || i+1}</div>
                             ${turn.thinking ? `
-                                <div class="px-2 py-1 bg-purple-50 border-b border-gray-100">
-                                    <span class="text-purple-600 font-medium">💭 [thinking]</span><br />
-                                    <pre class="text-gray-700 ml-1 overflow-wrap text-wrap max-h-full overflow-y-auto">${escapeHtml(turn.thinking)}</pre>
+                                <div class="px-2 py-1 bg-purple-50 dark:bg-purple-900/20 border-b border-gray-100 dark:border-gray-700">
+                                    <span class="text-purple-600 dark:text-purple-400 font-medium">💭 [thinking]</span><br />
+                                    <pre class="text-gray-700 dark:text-gray-300 ml-1 overflow-wrap text-wrap max-h-full overflow-y-auto">${escapeHtml(turn.thinking)}</pre>
                                 </div>
                             ` : ''}
                             ${turn.tool_calls && turn.tool_calls.length > 0 ? `
-                                <div class="px-2 py-1 bg-blue-50 border-b border-gray-100 font-mono">
-                                    <span class="text-blue-600">🔧</span>
-                                    ${turn.tool_calls.map(tc => `<span class="text-indigo-600 font-semibold ml-1">${escapeHtml(tc.name)}</span><span class="text-gray-500">(${escapeHtml(JSON.stringify(tc.arguments || {})).substring(0, 60)})</span>`).join(' ')}
+                                <div class="px-2 py-1 bg-blue-50 dark:bg-blue-900/20 border-b border-gray-100 dark:border-gray-700 font-mono">
+                                    <span class="text-blue-600 dark:text-blue-400">🔧</span>
+                                    ${turn.tool_calls.map(tc => `<span class="text-indigo-600 dark:text-indigo-400 font-semibold ml-1">${escapeHtml(tc.name)}</span><span class="text-gray-500 dark:text-gray-400">(${escapeHtml(JSON.stringify(tc.arguments || {})).substring(0, 60)})</span>`).join(' ')}
                                 </div>
                             ` : ''}
                             ${turn.tool_results && turn.tool_results.length > 0 ? `
-                                <div class="px-2 py-1 bg-green-50 border-b border-gray-100 font-mono text-gray-600">
-                                    <span class="text-green-600">📥</span>
+                                <div class="px-2 py-1 bg-green-50 dark:bg-green-900/20 border-b border-gray-100 dark:border-gray-700 font-mono text-gray-600 dark:text-gray-300">
+                                    <span class="text-green-600 dark:text-green-400">📥</span>
                                     <span class="ml-1">${escapeHtml(JSON.stringify(turn.tool_results[0]?.result || {}, null, 0)).substring(0, 120)}${JSON.stringify(turn.tool_results[0]?.result || {}).length > 120 ? '...' : ''}</span>
                                 </div>
                             ` : ''}
                             ${turn.response ? `
-                                <div class="px-2 py-1 bg-amber-50 font-semibold text-md">
-                                    <p class="text-amber-600">💬 [response]</p>
-                                    <pre class="text-gray-700 ml-1">${escapeHtml(turn.response)}</pre>
+                                <div class="px-2 py-1 bg-amber-50 dark:bg-amber-900/20 font-semibold text-md">
+                                    <p class="text-amber-600 dark:text-amber-400">💬 [response]</p>
+                                    <pre class="text-gray-700 dark:text-gray-300 ml-1">${escapeHtml(turn.response)}</pre>
                                 </div>
                             ` : ''}
                         </div>

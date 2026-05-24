@@ -42,6 +42,11 @@ class ToolRegistry:
         # Long-term memory tools
         self._builtins['builtin:remember'] = _builtin_remember_factory
         self._builtins['builtin:recall'] = _builtin_recall_factory
+        self._builtins['builtin:forget_memory'] = _builtin_forget_memory_factory
+        # Session recall tool
+        self._builtins['builtin:recall_sessions'] = _builtin_recall_sessions_factory
+        # Tool to clear active fallback flag from agent_state (agent calls this)
+        self._builtins['builtin:reset_active_model'] = _builtin_reset_active_model_factory
 
     def get_tool_defs_from_json(self) -> List[Dict[str, Any]]:
         """Load tool definitions from tools/*.json (for eval & agent config UI)."""
@@ -112,9 +117,33 @@ class ToolRegistry:
                     fn_to_skill[parts[2]] = parts[1]
 
         def real_executor(function_name: str, arguments: dict) -> dict:
+            # Authorization guard: tool must be in assigned_tool_ids
+            _assigned = set(ctx.get('assigned_tool_ids', []))
+            if function_name not in _assigned:
+                # Also check namespaced IDs like skill:skill_id:fn_name
+                _namespaced_match = any(
+                    tid.endswith(f':{function_name}')
+                    for tid in _assigned
+                )
+                if not _namespaced_match:
+                    return {
+                        "error": (
+                            f"Tool '{function_name}' is not assigned to this agent. "
+                            "Only explicitly assigned tools can be used."
+                        ),
+                        "blocked_by": "authorization",
+                    }
+
             # Agent state guard: block write tools when in plan mode or state-blocked
+            # Exception: /_self/ paths are always allowed (agent's own config dir).
+            from backend.tools._workspace import is_self_path
+            _self_path_args = {'write_file', 'str_replace', 'patch', 'file_edit', 'file_create'}
+            _is_self_target = (
+                function_name in _self_path_args
+                and any(is_self_path(str(v)) for v in arguments.values())
+            )
             ms = ctx.get('agent_state')
-            if ms:
+            if ms and not _is_self_target:
                 blocked = ms.is_blocked(function_name)
                 if blocked is True:
                     return {
@@ -256,18 +285,13 @@ class ToolRegistry:
 def _builtin_read_factory(agent_context: dict):
     """Factory for the built-in 'read' tool scoped to an agent's KB directory."""
     agent_id = agent_context.get('id', '')
-    # For remote agents (those with a workplace_id), KB files live on the evonic
-    # server at agents/{agent_id}/kb/ — NOT on the remote workspace.  Always use
-    # the local server path in that case, matching what /_self/ resolution does.
     workplace_id = agent_context.get('workplace_id')
-    agent_workspace = agent_context.get('workspace')
-    if workplace_id or not agent_workspace:
-        base_dir = os.path.normpath(os.path.join(
-            os.path.dirname(__file__), '..', '..', 'agents', agent_id, 'kb'
-        ))
-    else:
-        base_dir = os.path.normpath(os.path.join(agent_workspace, 'kb'))
-    base_dir = os.path.normpath(base_dir)
+    # KB files always live on the evonic server at agents/{agent_id}/kb/.
+    # The agent's workspace path is where bash/runpy tools execute — it
+    # has nothing to do with where KB files are stored.
+    base_dir = os.path.normpath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'agents', agent_id, 'kb'
+    ))
 
     # Tailor description for remote agents who see /_self/kb/ in their system prompt
     _is_remote = bool(workplace_id)
@@ -373,15 +397,16 @@ def _builtin_use_skill_factory(agent_context: dict):
             "name": "use_skill",
             "description": (
                 "Lazy-load a skill's SYSTEM.md knowledge into the agent context. "
+                "Only works for lazy-loaded skills (eager skills' tools are already available). "
                 "Use this when you need to understand a skill's capabilities before using it. "
-                "Example: use_skill({id: 'hello_world'})"
+                "Example: use_skill({id: 'kanban'})"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "id": {
                         "type": "string",
-                        "description": "The ID of the skill to load (e.g. 'hello_world')."
+                        "description": "The ID of the skill to load (e.g. 'kanban'). Only lazy-loaded skills are supported."
                     }
                 },
                 "required": ["id"]
@@ -404,6 +429,7 @@ def _builtin_unload_skill_factory(agent_context: dict):
             "name": "unload_skill",
             "description": (
                 "Unload a previously lazy-loaded skill, removing its tools from the current context. "
+                "Only works for lazy-loaded skills — eager skills' tools are always available. "
                 "Use this after you are done with a skill to keep the context clean. "
                 "Example: unload_skill({id: 'plugin_creator'})"
             ),
@@ -412,7 +438,7 @@ def _builtin_unload_skill_factory(agent_context: dict):
                 "properties": {
                     "id": {
                         "type": "string",
-                        "description": "The ID of the skill to unload (e.g. 'plugin_creator')."
+                        "description": "The ID of the skill to unload (e.g. 'plugin_creator'). Only lazy-loaded skills can be unloaded."
                     }
                 },
                 "required": ["id"]
@@ -692,6 +718,53 @@ def _builtin_recall_factory(agent_context: dict):
     return tool_def, executor
 
 
+def _builtin_forget_memory_factory(agent_context: dict):
+    """Factory for the built-in 'forget_memory' tool — soft-deletes a long-term memory."""
+    tool_def = {
+        "type": "function",
+        "function": {
+            "name": "forget_memory",
+            "description": (
+                "Delete a specific memory from your long-term memory by its ID. "
+                "The memory is soft-deleted (marked as expired) so it will no longer "
+                "appear in recall results. Use this when a memory is no longer relevant "
+                "or was stored incorrectly. "
+                "Example: forget_memory(memory_id=42)"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "memory_id": {
+                        "type": "integer",
+                        "description": "The ID of the memory to delete."
+                    },
+                    "agent_id": {
+                        "type": "string",
+                        "description": (
+                            "The agent whose memory to delete. Defaults to yourself. "
+                            "Only super agents can delete another agent's memories."
+                        )
+                    }
+                },
+                "required": ["memory_id"]
+            }
+        }
+    }
+
+    def executor(args: dict) -> dict:
+        from backend.agent_runtime.memory_manager import forget_memory
+        agent_id = agent_context.get('id', '')
+        is_super = bool(agent_context.get('is_super', False))
+        return forget_memory(
+            agent_id=agent_id,
+            memory_id=args.get('memory_id'),
+            target_agent_id=args.get('agent_id'),
+            is_super=is_super,
+        )
+
+    return tool_def, executor
+
+
 def _builtin_state_factory(agent_context: dict):
     """Factory for the built-in 'state' tool (agent state machine gate).
 
@@ -771,5 +844,119 @@ def _builtin_state_factory(agent_context: dict):
             })
 
         return result
+
+    return tool_def, executor
+
+
+def _builtin_recall_sessions_factory(agent_context: dict):
+    """Factory for the built-in 'recall_sessions' tool — queries session summaries from DB."""
+    tool_def = {
+        "type": "function",
+        "function": {
+            "name": "recall_sessions",
+            "description": (
+                "Recall session summaries from previous conversations with this agent. "
+                "Use without query to get all recent sessions. "
+                "Use query to search for specific topics by keyword. "
+                "Example: recall_sessions() or recall_sessions(query='login bug')"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search keyword (e.g. 'login bug', 'kanban'). Leave empty to get all sessions."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of sessions to return (default: 20, max: 50)."
+                    }
+                },
+                "required": []
+            }
+        }
+    }
+
+    def executor(args: dict) -> dict:
+        from models.db import db
+        agent_id = agent_context.get('id', '')
+        query = args.get('query', '')
+        limit = min(args.get('limit', 20), 50)
+
+        summaries = db.get_agent_summaries(agent_id, query=query, limit=limit)
+
+        if not summaries:
+            return {"result": "No session summaries found."}
+
+        # Format as markdown
+        lines = [f"## Session Summaries", f"\nFound {len(summaries)} session(s):\n"]
+        for s in summaries:
+            date = s.get("created_at", "")[:10] if s.get("created_at") else "?"
+            channel = s.get("channel_id") or "web"
+            msg_count = s.get("message_count", 0)
+            session_id = s.get("session_id", "?")
+            summary_text = s.get("summary", "")
+
+            # Extract session ID short form (last part after the dash)
+            short_id = session_id.split('-')[-1][:8] if '-' in session_id else session_id[:8]
+
+            lines.append(f"### Session {short_id} ({channel}, {date})")
+            lines.append(f"- Messages: {msg_count}")
+            lines.append("")
+            lines.append(summary_text)
+            lines.append("")
+
+        return {"result": "\n".join(lines)}
+
+    return tool_def, executor
+
+
+def _builtin_reset_active_model_factory(agent_context: dict):
+    """Factory for the built-in 'reset_active_model' tool.
+
+    Clears the active fallback model flag from agent_state so the agent
+    returns to its configured primary/default model on the next turn.
+    """
+    tool_def = {
+        "type": "function",
+        "function": {
+            "name": "reset_active_model",
+            "description": (
+                "Clears the active fallback model flag from agent_state. "
+                "After calling this, the agent will use its configured "
+                "primary/default model on the next turn."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    }
+
+    def executor(arguments: dict) -> dict:
+        agent_id = agent_context.get('id', '')
+        if not agent_id:
+            return {"error": "Agent ID not available in context."}
+        from models.chat import agent_chat_manager
+        import json
+        try:
+            _db = agent_chat_manager.get(agent_id)
+            _raw = _db.get_agent_state()
+            if not _raw:
+                return {"result": "No agent state found — nothing to reset."}
+            _data = json.loads(_raw)
+            if 'active_fallback_model_id' not in _data:
+                return {"result": "No active fallback model to reset."}
+            fb_id = _data.pop('active_fallback_model_id', None)
+            _db.upsert_agent_state(json.dumps(_data))
+            return {
+                "result": (
+                    f"Fallback model ({fb_id}) has been cleared. "
+                    "The agent will use its primary model on the next turn."
+                )
+            }
+        except Exception as e:
+            return {"error": f"Failed to reset active model: {str(e)}"}
 
     return tool_def, executor

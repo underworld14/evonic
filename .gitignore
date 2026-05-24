@@ -307,3 +307,8 @@ run/
 .codeiumignore
 AGENTS.md
 CLAUDE.md
+CHANGELOG.md
+**/evonic
+
+# Agent artifacts (generated reports, review outputs)
+artifacts/

@@ -163,6 +163,24 @@ Your answer (three numbers only):""",
         "expected_format": "rubric"
     },
     
+    "coding": {
+        "template": """You are given a Python coding question and an AI's response. Extract ONLY the program output or final answer.
+
+---BEGIN RESPONSE---
+{response}
+---END RESPONSE---
+
+Rules:
+1. Return ONLY the exact output that the program would print (no explanation, no code)
+2. If the question asks "apa output dari kode ini?", return exactly what print() would produce
+3. If there are multiple print statements, return all outputs separated by newlines
+4. No backticks, no quotes, no formatting - just the raw output
+5. If the output is a number, return just the number
+
+Your answer (output only):""",
+        "expected_format": "text"
+    },
+
     "health": {
         "template": """You are given a health-related question and an AI's response. Extract the final answer.
 
@@ -516,6 +534,17 @@ class AnswerExtractor:
             # Strip markdown code fences if present
             cleaned_sql = re.sub(r'```(?:sql)?\s*', '', raw)
             cleaned_sql = cleaned_sql.replace('```', '').strip()
+
+            # Normalize typographic quotes to straight ASCII quotes (SQL requires ASCII delimiters)
+            # This fixes PASS 2 LLM extraction where normalize_llm_text() converts ' to ’
+            cleaned_sql = (
+                cleaned_sql
+                .replace('‘', "'")  # left single quotation mark → '
+                .replace('’', "'")  # right single quotation mark → '
+                .replace('“', '"')  # left double quotation mark → "
+                .replace('”', '"')  # right double quotation mark → "
+            )
+
             upper = cleaned_sql.upper()
             if "SELECT" in upper:
                 return {"valid": True, "cleaned": cleaned_sql, "error": ""}

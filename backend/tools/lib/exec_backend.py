@@ -39,7 +39,7 @@ def file_stat_code(path: str) -> str:
     """Return a Python code snippet that prints exists/size/is_binary for *path*.
 
     Used by SSH-based backends (SSHBackend, RemoteWorkplaceBackend,
-    CloudWorkplaceBackend) to query file metadata on a remote host.
+    TunnelWorkplaceBackend) to query file metadata on a remote host.
     The snippet prints ``exists=0|1 size=<int> is_binary=0|1`` on a
     single line, parseable by :func:`parse_file_stat_output`.
     """
@@ -163,22 +163,25 @@ class BackendRegistry:
             if session_id in self._backends:
                 return self._backends[session_id]
 
+        # Extract sandbox setting from agent_context (used by both workplace and default paths)
+        sandbox_enabled = bool((agent_context or {}).get('sandbox_enabled', 1))
+
         # If agent has a Workplace assigned, delegate to WorkplaceManager
         workplace_id = (agent_context or {}).get('workplace_id')
         if workplace_id:
             from backend.workplaces.manager import workplace_manager
-            return workplace_manager.get_backend(workplace_id)
+            return workplace_manager.get_backend(workplace_id, sandbox_enabled=sandbox_enabled)
 
         # Create default backend based on agent_context
-        sandbox_enabled = (agent_context or {}).get('sandbox_enabled', 1)
         workspace = (agent_context or {}).get('workspace') or None
 
         if sandbox_enabled:
             from backend.tools.lib.backends.docker_backend import DockerBackend
-            backend = DockerBackend(session_id, workspace=workspace)
+            agent_id = (agent_context or {}).get('agent_id', (agent_context or {}).get('id', ''))
+            backend = DockerBackend(session_id, agent_id=agent_id, workspace=workspace)
         else:
             from backend.tools.lib.backends.local_backend import LocalBackend
-            backend = LocalBackend(workspace=workspace)
+            backend = LocalBackend(session_id=session_id, workspace=workspace)
 
         # Don't store default backends — they're ephemeral and session-keyed
         # internally by DockerBackend itself. Only explicit overrides are stored.

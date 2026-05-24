@@ -45,6 +45,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     wget \
     telnet \
+    dnsutils \
     iputils-ping \
     openssh-server \
     openssl \
@@ -58,6 +59,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Utilities
     ccrypt \
     xxd \
+    tmux \
+    jq \
     sqlite3 libsqlite3-dev \
     rsync \
     && apt-get clean \

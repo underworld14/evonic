@@ -55,6 +55,9 @@ def session_slug(external_user_id: str, agent_id: str) -> str:
 
     Example: session_slug('alice', 'siwa') → 'a1b2c3d4' (8 hex chars)
     """
+    # Guard against None — convert to empty string so sorting doesn't crash
+    external_user_id = external_user_id or ''
+    agent_id = agent_id or ''
     items = sorted([external_user_id, agent_id])
     h = hashlib.sha1(json.dumps(items).encode()).hexdigest()
     return h[:8]
@@ -71,7 +74,13 @@ class ChatLog:
     def __init__(self, agent_id: str, session_id: str):
         self.agent_id = agent_id
         self.session_id = session_id
-        sessions_dir = os.path.join(_AGENTS_DIR, agent_id, 'sessions')
+        from backend.subagent_manager import subagent_manager
+        if subagent_manager.is_subagent(agent_id):
+            from models.chat import SUB_AGENTS_TMP_DIR
+            base_dir = os.path.join(SUB_AGENTS_TMP_DIR, agent_id)
+        else:
+            base_dir = os.path.join(_AGENTS_DIR, agent_id)
+        sessions_dir = os.path.join(base_dir, 'sessions')
         os.makedirs(sessions_dir, exist_ok=True)
         # session_id is "{agent_id}-{hash}" — strip the prefix for the filename
         filename = session_id
@@ -340,7 +349,9 @@ class ChatLog:
         - Each subsequent tool_output becomes a {role: "tool"} message.
 
         after_ts: if set, only include entries with ts > after_ts (for summary tail).
-        limit: max number of entries to consider (applied before grouping).
+        limit: max number of semantic messages (user/final/intermediate) to consider.
+              Mechanical entries (thinking/tool_call/tool_output) between them are
+              always included so tool-heavy turns don't inflate the count.
         """
         raw_entries: List[dict] = []
 
@@ -355,16 +366,23 @@ class ChatLog:
                 if entry.get('type') in _LLM_CONTEXT_TYPES:
                     raw_entries.append(entry)
         else:
-            # Read last `limit` conversation entries (tail scan)
+            # Read last `limit` semantic messages (tail scan).
+            # Count only semantic entries (user, final, intermediate) toward
+            # the limit — these represent actual conversation turns.  Mechanical
+            # entries (thinking, tool_call, tool_output) between them are always
+            # collected so tool-heavy turns don't inflate the count.
             collected = []
+            semantic_count = 0
             for raw in self._iter_lines_reverse():
                 entry = self._parse(raw)
                 if entry is None:
                     continue
                 if entry.get('type') in _LLM_CONTEXT_TYPES:
                     collected.append(entry)
-                    if len(collected) >= limit:
-                        break
+                    if entry.get('type') in _SUMMARY_COUNT_TYPES:
+                        semantic_count += 1
+                        if semantic_count >= limit:
+                            break
             collected.reverse()
             raw_entries = collected
 
@@ -379,7 +397,10 @@ class ChatLog:
                 except Exception:
                     pass
                 self._fh = None
-            open(self._path, 'w', encoding='utf-8').close()
+            try:
+                open(self._path, 'w', encoding='utf-8').close()
+            except FileNotFoundError:
+                pass  # No file to clear — nothing to do
 
 
 # ------------------------------------------------------------------
@@ -413,15 +434,30 @@ def _fix_interleaved_user_messages(msgs: List[Dict[str, Any]]) -> List[Dict[str,
                     tool_responses.append(next_msg)
                     found_ids.add(next_tc_id)
                     j += 1
-                elif next_role in ('user', 'system') and not tool_responses:
-                    # Defer: encountered before any tool response — was recorded
-                    # out-of-order due to mid-execution injection.
+                elif next_role in ('user', 'system'):
+                    # Defer: user/system message was recorded out-of-order due to
+                    # mid-execution injection. This can happen before ANY tool response
+                    # OR between tool responses (e.g., tc1 done, user sends message,
+                    # tc2 still running). Always defer to after all tool responses so
+                    # the API sees tool messages immediately following the tool_calls
+                    # assistant message.
                     deferred.append(next_msg)
                     j += 1
                 else:
                     break
                 if found_ids == tc_ids:
                     break  # All expected tool responses collected
+            # If some tool responses are missing (agent interrupted before recording
+            # outputs, or history limit cut them off), inject synthetic error
+            # responses so the API contract is satisfied: every tool_call_id in the
+            # assistant message must have a corresponding tool response.
+            missing_ids = tc_ids - found_ids
+            for mid in missing_ids:
+                tool_responses.append({
+                    'role': 'tool',
+                    'tool_call_id': mid,
+                    'content': '{"error": "Tool execution was interrupted before completion."}',
+                })
             result.append(msg)
             result.extend(tool_responses)
             result.extend(deferred)
@@ -454,6 +490,11 @@ def _reconstruct_llm_messages(entries: List[dict]) -> List[Dict[str, Any]]:
             i += 1
 
         elif etype == 'user':
+            # Skip slash command user messages — they are handled directly by
+            # the command executor and must never enter LLM context.
+            if (entry.get('metadata') or {}).get('slash_command'):
+                i += 1
+                continue
             _pending_reasoning = ''  # reasoning before a user message is irrelevant
             _pending_tool_ids = []
             msg: Dict[str, Any] = {'role': 'user', 'content': content}
@@ -477,6 +518,11 @@ def _reconstruct_llm_messages(entries: List[dict]) -> List[Dict[str, Any]]:
             i += 1
 
         elif etype == 'system':
+            # Skip slash command responses — they were saved with metadata.slash_command
+            # and must never enter LLM context.
+            if (entry.get('metadata') or {}).get('slash_command'):
+                i += 1
+                continue
             # System injections were sent as user messages to the LLM
             _pending_tool_ids = []
             messages.append({'role': 'user', 'content': content})
@@ -547,7 +593,34 @@ def _reconstruct_llm_messages(entries: List[dict]) -> List[Dict[str, Any]]:
             # Skip turn_begin, turn_end, pending
             i += 1
 
-    return _fix_interleaved_user_messages(messages)
+    return _drop_orphaned_tool_messages(
+        _fix_interleaved_user_messages(messages))
+
+
+def _drop_orphaned_tool_messages(msgs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Remove tool messages whose tool_call_id has no preceding assistant(tool_calls).
+
+    This can happen when the summary watermark timestamp ties with a tool_call
+    entry — the forward scan excludes the tool_call (ts <= watermark) but
+    includes its tool_output (later ts), producing an orphaned tool message
+    that the LLM API rejects.  Also drops duplicate tool responses for the
+    same tool_call_id (can occur when synthetic placeholders were injected
+    and the real response appears later).
+    """
+    declared_ids: set = set()
+    responded_ids: set = set()
+    result: List[Dict[str, Any]] = []
+    for msg in msgs:
+        if msg.get('tool_calls'):
+            for tc in msg['tool_calls']:
+                declared_ids.add(tc['id'])
+        if msg.get('role') == 'tool':
+            tcid = msg.get('tool_call_id', '')
+            if tcid not in declared_ids or tcid in responded_ids:
+                continue  # orphaned or duplicate — skip
+            responded_ids.add(tcid)
+        result.append(msg)
+    return result
 
 
 # ------------------------------------------------------------------
@@ -576,7 +649,13 @@ class ChatLogManager:
 
     def list_sessions(self, agent_id: str) -> List[str]:
         """Return session IDs (hash-only, without agent_id prefix) of all session log files for an agent."""
-        sessions_dir = os.path.join(_AGENTS_DIR, agent_id, 'sessions')
+        from backend.subagent_manager import subagent_manager
+        if subagent_manager.is_subagent(agent_id):
+            from models.chat import SUB_AGENTS_TMP_DIR
+            base_dir = os.path.join(SUB_AGENTS_TMP_DIR, agent_id)
+        else:
+            base_dir = os.path.join(_AGENTS_DIR, agent_id)
+        sessions_dir = os.path.join(base_dir, 'sessions')
         try:
             return [f[:-6] for f in os.listdir(sessions_dir) if f.endswith('.jsonl')]
         except FileNotFoundError:

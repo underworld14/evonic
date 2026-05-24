@@ -81,7 +81,14 @@ CONTINUATION_RE = re.compile("|".join(_CONTINUATION_PATTERNS), re.IGNORECASE)
 
 _PLANNING_PATTERNS = [
     r"(adalah|berikut) .*?(plan|rencana|draft)",
-    r"(apakah .*?setuju|sudah oke|)"
+    r"(apakah .*?setuju|sudah oke)",
+    r"sudah (dibuat|selesai|berhasil|dikerjakan|dikirim|dijadwalkan)",
+    r"\bringkasan\b",
+    r"berikut (hasil|laporan|report|data|daftar|detail|informasi|status)",
+    r"\bcatatan\s*:",
+    r"\b(mau|perlu|ingin|perlukah|haruskah) saya\b",
+    r"\b(shall|should) I\b",
+    r"\b(would you like|do you want) me to\b",
 ]
 PLANNING_RE = re.compile("|".join(_PLANNING_PATTERNS), re.IGNORECASE)
 
@@ -90,6 +97,23 @@ CONTINUATION_NUDGE = (
     "please keep going; if nothing else remains, reply only with [DONE]"
 )
 MAX_CONTINUATION_NUDGES = 3
+
+
+def should_nudge_continuation(content: str, nudge_count: int) -> str:
+    """Decide what the loop should do for a no-tool-call response.
+
+    Returns:
+        "nudge"   – inject a continuation nudge and re-enter the loop
+        "final"   – treat the response as the final answer (PLANNING_RE negated)
+        "none"    – no continuation phrase detected; fall through normally
+    """
+    if not content or nudge_count >= MAX_CONTINUATION_NUDGES:
+        return "none"
+    if not CONTINUATION_RE.search(content):
+        return "none"
+    if PLANNING_RE.search(content):
+        return "final"
+    return "nudge"
 
 
 # ── Emergency compaction ────────────────────────────────────────────────────
@@ -168,7 +192,9 @@ def _emergency_compact_messages(messages: list, llm, llm_lock: threading.Lock,
     _logger.info("Calling LLM for compaction (summary=%dc, recent=%dc, prompt_total=%dc)",
                  len(existing_summary_capped), len(recent_text_capped), len(compact_prompt))
     try:
+        _logger.info("[LOCK] _llm_lock - WAITING (session=%s, compaction)", session_id)
         with llm_lock:
+            _logger.info("[LOCK] _llm_lock - ACQUIRED (session=%s, compaction)", session_id)
             result = llm.chat_completion(
                 messages=[{"role": "user", "content": compact_prompt}],
                 tools=None,

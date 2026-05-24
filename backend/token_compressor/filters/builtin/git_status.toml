@@ -1,0 +1,20 @@
+[filter]
+command = "^git\\s+status"
+description = "Compact git status — show only changed files"
+strip_ansi = true
+replace = [
+    { pattern = "^\t", replacement = "  " },
+]
+strip_lines = [
+    '^On branch ',
+    '^Your branch is ',
+    '^no changes added',
+    '^\s*\(use "git ',
+    '^nothing to commit',
+    '^nothing added to commit',
+    '^\s*\(working tree clean\)',
+    '^\s*\(commit or discard',
+    '^$',
+]
+head_lines = 30
+on_empty = "git status: clean working tree"

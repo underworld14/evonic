@@ -5,16 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Setup — Evonic</title>
     <script>
-    // Anti-flash: apply theme before first paint
+    // Anti-flash: apply theme + page background before first paint (synchronous, render-blocking)
     (function() {
         var t = localStorage.getItem('evonic-theme') || 'system';
-        if (t === 'dark' || (t === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        var isDark = t === 'dark' || (t === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        if (isDark) {
             document.documentElement.classList.add('dark');
         }
+        // Set html background inline so it paints instantly — eliminates flash between navigations
+        document.documentElement.style.backgroundColor = isDark ? '#0f172a' : '#eef2ff';
     })();
     </script>
-    <script src="{{ url_for('static', filename='js/tailwindcss.js') }}?v=1"></script>
-    <script>tailwind.config = { darkMode: 'class' };</script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/tailwind.css') }}?v=3">
     <script src="{{ url_for('static', filename='js/jquery-3.7.1.min.js') }}"></script>
 </head>
 <body class="bg-gradient-to-br from-indigo-50 to-slate-100 dark:from-slate-900 dark:to-slate-800 min-h-screen flex items-center justify-center p-4">
@@ -22,10 +24,9 @@
 
         <!-- Header -->
         <div class="text-center mb-8">
-            <div class="inline-flex items-center justify-center w-16 h-16 bg-indigo-600 rounded-2xl mb-4 shadow-lg">
-                <svg width="32" height="32" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <rect x="10" y="1.5" width="12" height="12" rx="2" transform="rotate(45 10 1.5)" fill="white"/>
-                </svg>
+            <div class="mb-4">
+                <img src="{{ url_for('static', filename='img/mascot.png') }}" alt="Evonic Mascot"
+                     class="inline-block max-w-[140px] w-full h-auto drop-shadow-lg">
             </div>
             <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">Evonic</h1>
             <p class="text-gray-500 dark:text-gray-400 mt-1 text-sm">First-time setup</p>
@@ -153,23 +154,6 @@
                         <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">Alphanumeric and underscores only. Auto-derived from name. Cannot be changed later.</p>
                     </div>
 
-                    <!-- Tone/style -->
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-2">Communication Style <span class="text-red-500">*</span></label>
-                        <div class="space-y-2">
-                            {% for tid, t in tones.items() %}
-                            <label class="tone-card flex items-start gap-3 border-2 rounded-xl p-3 cursor-pointer transition-all
-                                {% if tid == 'professional' %}border-indigo-500 bg-indigo-50 dark:bg-indigo-950{% else %}border-gray-200 dark:border-gray-600 hover:border-indigo-300 dark:hover:border-indigo-500{% endif %}">
-                                <input type="radio" name="tone" value="{{ tid }}" {% if tid == 'professional' %}checked{% endif %} class="mt-0.5 accent-indigo-600">
-                                <div>
-                                    <div class="text-sm font-semibold text-gray-800 dark:text-gray-200">{{ t.label }}</div>
-                                    <div class="text-xs text-gray-500 dark:text-gray-400">{{ t.description }}</div>
-                                </div>
-                            </label>
-                            {% endfor %}
-                        </div>
-                    </div>
-
                     <!-- Language preference -->
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Language <span class="text-red-500">*</span></label>
@@ -185,13 +169,6 @@
                             </label>
                             {% endfor %}
                         </div>
-                    </div>
-
-                    <!-- Custom tone textarea -->
-                    <div id="custom-tone-row" class="hidden">
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Custom Style Instructions</label>
-                        <textarea id="custom-tone-text" rows="3" placeholder="Describe how the agent should communicate..."
-                            class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 rounded-lg text-sm placeholder-gray-400 dark:placeholder-gray-500 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 resize-y"></textarea>
                     </div>
 
                     <div class="flex justify-between pt-2">
@@ -237,10 +214,6 @@
                         <div class="flex justify-between px-4 py-3">
                             <span class="text-gray-500 dark:text-gray-400 font-medium">Agent ID</span>
                             <span id="review-agent-id" class="text-gray-900 dark:text-gray-100 font-mono text-xs"></span>
-                        </div>
-                        <div class="flex justify-between px-4 py-3">
-                            <span class="text-gray-500 dark:text-gray-400 font-medium">Style</span>
-                            <span id="review-tone" class="text-gray-900 dark:text-gray-100"></span>
                         </div>
                         <div class="flex justify-between px-4 py-3">
                             <span class="text-gray-500 dark:text-gray-400 font-medium">Language</span>
@@ -305,7 +278,6 @@
 <script>
 // Provider metadata from server
 const PROVIDERS = {{ providers | tojson }};
-const TONES = {{ tones | tojson }};
 const LANGUAGES = {{ languages | tojson }};
 
 let currentStep = 1;
@@ -322,18 +294,6 @@ $(document).on('change', 'input[name="provider"]', function() {
 $(document).on('change', 'input[name="language"]', function() {
     $('.lang-card').removeClass('border-indigo-500 bg-indigo-50 dark:bg-indigo-950').addClass('border-gray-200 dark:border-gray-600');
     $(this).closest('.lang-card').addClass('border-indigo-500 bg-indigo-50 dark:bg-indigo-950').removeClass('border-gray-200 dark:border-gray-600');
-});
-
-// ---- Tone card highlight ----
-$(document).on('change', 'input[name="tone"]', function() {
-    $('.tone-card').removeClass('border-indigo-500 bg-indigo-50 dark:bg-indigo-950').addClass('border-gray-200 dark:border-gray-600');
-    $(this).closest('.tone-card').addClass('border-indigo-500 bg-indigo-50 dark:bg-indigo-950').removeClass('border-gray-200 dark:border-gray-600');
-    const tone = $(this).val();
-    if (tone === 'custom') {
-        $('#custom-tone-row').removeClass('hidden');
-    } else {
-        $('#custom-tone-row').addClass('hidden');
-    }
 });
 
 // ---- Agent name -> ID auto-derive ----
@@ -462,7 +422,6 @@ function validateStep4() {
 
 function populateReview() {
     const provider = $('input[name="provider"]:checked').val();
-    const tone = $('input[name="tone"]:checked').val();
     const language = $('input[name="language"]:checked').val();
     $('#review-provider').text((PROVIDERS[provider] || {}).label || provider);
     $('#review-model').text($('#model-name').val().trim());
@@ -486,8 +445,6 @@ function submitSetup() {
         api_key: $('#api-key').val().trim() || null,
         agent_name: $('#agent-name').val().trim(),
         agent_id: $('#agent-id').val().trim(),
-        tone: $('input[name="tone"]:checked').val(),
-        custom_tone_text: $('#custom-tone-text').val().trim(),
         language: $('input[name="language"]:checked').val(),
         description: '',
         password: $('#password').val(),
@@ -503,7 +460,7 @@ function submitSetup() {
         },
         error: function(xhr) {
             const msg = (xhr.responseJSON || {}).error || 'Unexpected error. Please try again.';
-            showStepError(3, msg);
+            showStepError(4, msg);
             $('#s4-next').prop('disabled', false);
             $('#create-spinner').addClass('hidden');
         }

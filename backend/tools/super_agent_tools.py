@@ -42,6 +42,33 @@ def _read_system_prompt(agent_id: str) -> str:
     return ''
 
 
+_NOTES_MD_TEMPLATE = """# Notes.md -- User Preferences & Instructions
+
+This file stores your user's personal preferences, tastes, language
+preferences, and communication style instructions.
+
+## What to store here
+
+- User's preferred language (e.g. "User prefers Bahasa Indonesia")
+- Communication style preferences (e.g. "User likes concise answers",
+  "User dislikes emoji")
+- Personal instructions (e.g. "Call the user 'Pak'")
+- Tastes and preferences (e.g. "User prefers bullet points over paragraphs")
+
+## What NOT to store here (use `remember` instead)
+
+- Factual/memorization data: addresses, phone numbers, email, birthday
+- Secret/sensitive data: passwords, tokens, PINs, secret codes, bank accounts
+
+## Usage
+
+- Read this file: read("notes.md")
+- Update via write_file with path /_self/kb/notes.md
+- Update immediately when the user gives a new preference
+- Prioritize notes.md over `remember` for non-factual preference information
+"""
+
+
 # ==================== Tool Definitions ====================
 
 _TOOL_DEFS = [
@@ -296,6 +323,49 @@ _TOOL_DEFS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "assign_skills",
+            "description": "Add skills to an agent (skips skills already assigned). Does not remove existing assignments. Validates agent exists before assigning.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "The agent's ID"
+                    },
+                    "skill_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of skill IDs to assign (e.g., 'kanban', 'github')"
+                    }
+                },
+                "required": ["agent_id", "skill_ids"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "unassign_skill",
+            "description": "Remove a single skill from an agent's assignment list. If the skill was not assigned, returns a clear message (not an error).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "The agent's ID"
+                    },
+                    "skill_id": {
+                        "type": "string",
+                        "description": "The skill ID to remove (e.g., 'kanban')"
+                    }
+                },
+                "required": ["agent_id", "skill_id"]
+            }
+        }
+    },
 ]
 
 
@@ -344,6 +414,11 @@ def _exec_create_agent(args: dict) -> dict:
             'workspace': workspace,
         })
         _write_system_prompt(agent_id, args.get('system_prompt', ''))
+        # Create notes.md template if it does not already exist
+        _notes_md = os.path.join(AGENTS_DIR, agent_id, 'kb', 'notes.md')
+        if not os.path.isfile(_notes_md):
+            with open(_notes_md, 'w', encoding='utf-8') as _f:
+                _f.write(_NOTES_MD_TEMPLATE)
         return {'success': True, 'agent_id': agent_id, 'message': f"Agent '{name}' ({agent_id}) created successfully."}
     except Exception as e:
         return {'error': str(e)}
@@ -524,6 +599,12 @@ def _exec_apply_skillset(args: dict) -> dict:
             with open(kb_file_path, 'w', encoding='utf-8') as f:
                 f.write(content)
 
+        # Create notes.md template if it does not already exist
+        _notes_md = os.path.join(kb_dir, 'notes.md')
+        if not os.path.isfile(_notes_md):
+            with open(_notes_md, 'w', encoding='utf-8') as _f:
+                _f.write(_NOTES_MD_TEMPLATE)
+
         return {
             'success': True,
             'agent_id': agent_id,
@@ -571,6 +652,53 @@ def _exec_restart(args: dict, agent_context: dict = None) -> dict:
         session_id = agent_context.get('session_id')
     else:
         agent_id = channel_id = external_user_id = session_id = None
+
+    # ── Inter-agent restart guard ──────────────────────────────────────
+    # When a regular agent messages the super agent asking for a restart,
+    # the super agent should NOT auto-execute it — require user approval first.
+    # The approval flow in llm_loop.py handles the rest: when user approves,
+    # it sets agent_context['_skip_safety'] = True and re-calls us.
+    _is_inter_agent = bool(
+        external_user_id
+        and external_user_id.startswith('__agent__')
+    )
+    _skip_safety = agent_context.get('_skip_safety', False) if agent_context else False
+
+    if _is_inter_agent and not _skip_safety:
+        # Resolve the requesting agent's name for the approval prompt
+        _requester_name = external_user_id
+        _requester_id = external_user_id[len('__agent__'):] if _is_inter_agent else ''
+        try:
+            _req_agent = db.get_agent(_requester_id)
+            if _req_agent:
+                _requester_name = _req_agent.get('name', _requester_id)
+        except Exception:
+            pass
+
+        _logger.info(
+            'restart: inter-agent request from %s (%s) — requiring user approval',
+            _requester_name, _requester_id
+        )
+        return {
+            'level': 'requires_approval',
+            'score': 10,
+            'reasons': [
+                f'Server restart requested by another agent ({_requester_name}) '
+                f'via inter-agent messaging. This requires human approval.'
+            ],
+            'blocked_patterns': ['inter_agent_restart'],
+            'requires_approval': True,
+            'approval_info': {
+                'risk_level': 'high',
+                'description': (
+                    f'Agent "{_requester_name}" ({_requester_id}) has requested '
+                    f'a server restart via agent-to-agent messaging. '
+                    f'This will shut down the entire Evonic platform.'
+                ),
+                'initiated_by': _requester_name,
+                'initiated_by_id': _requester_id,
+            },
+        }
 
     # Persist caller info so the new process can notify them after boot
     recent_context = ''
@@ -670,6 +798,41 @@ def _exec_restart(args: dict, agent_context: dict = None) -> dict:
     return {'result': 'Restarting...'}
 
 
+def _exec_assign_skills(args: dict) -> dict:
+    agent_id = (args.get('agent_id') or '').strip()
+    skill_ids = args.get('skill_ids', [])
+    if not agent_id:
+        return {'error': 'agent_id is required.'}
+    if not db.get_agent(agent_id):
+        return {'error': f"Agent '{agent_id}' not found."}
+    if not isinstance(skill_ids, list):
+        return {'error': 'skill_ids must be a list.'}
+    current_skills = db.get_agent_skills(agent_id)
+    new_skills = [s for s in skill_ids if s not in current_skills]
+    if not new_skills:
+        return {'message': f"All {len(skill_ids)} skill(s) are already assigned to agent '{agent_id}'. No changes made."}
+    merged = current_skills + new_skills
+    db.set_agent_skills(agent_id, merged)
+    return {'success': True, 'message': f"Added {len(new_skills)} new skill(s) to agent '{agent_id}' ({len(skill_ids)} requested, {len(skill_ids) - len(new_skills)} already assigned). Total: {len(merged)} skill(s)."}
+
+
+def _exec_unassign_skill(args: dict) -> dict:
+    agent_id = (args.get('agent_id') or '').strip()
+    skill_id = (args.get('skill_id') or '').strip()
+    if not agent_id:
+        return {'error': 'agent_id is required.'}
+    if not skill_id:
+        return {'error': 'skill_id is required.'}
+    if not db.get_agent(agent_id):
+        return {'error': f"Agent '{agent_id}' not found."}
+    current_skills = db.get_agent_skills(agent_id)
+    if skill_id not in current_skills:
+        return {'message': f"Skill '{skill_id}' was not assigned to agent '{agent_id}'. No changes made."}
+    updated_skills = [s for s in current_skills if s != skill_id]
+    db.set_agent_skills(agent_id, updated_skills)
+    return {'success': True, 'message': f"Removed skill '{skill_id}' from agent '{agent_id}'. {len(updated_skills)} skill(s) remaining."}
+
+
 # ==================== Registry-style access ====================
 
 _EXECUTORS: Dict[str, Callable] = {
@@ -686,6 +849,8 @@ _EXECUTORS: Dict[str, Callable] = {
     'apply_skillset': _exec_apply_skillset,
     'set_owner_name': _exec_set_owner_name,
     'restart': _exec_restart,
+    'assign_skills': _exec_assign_skills,
+    'unassign_skill': _exec_unassign_skill,
 }
 
 

@@ -5,8 +5,6 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List
 
-from anthropic import Anthropic
-
 GENERATION_SYSTEM_PROMPT = """\
 You are a training data specialist for fine-tuning LLMs. You create high-quality \
 JSONL training examples for a villa customer service assistant that operates in \
@@ -28,7 +26,7 @@ Guidelines:
 - Include varied phrasings and contexts for the same concept
 - For math: show step-by-step reasoning in Indonesian
 - For SQL: use realistic villa/customer service schemas
-- For tool calling: use the available tools (calculator, database_query, api_call, file_create, file_edit)
+- For tool calling: use the available tools (calculator, database_query, file_create, file_edit)
 - For reasoning: include logical step-by-step thinking
 
 Respond with a JSON array of training examples. Each element should be a valid \
@@ -47,6 +45,7 @@ class TrainingDataGenerator:
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "training_data", "generated"
         )
+        from anthropic import Anthropic
         self.client = Anthropic(api_key=self.api_key)
         os.makedirs(self.output_dir, exist_ok=True)
 

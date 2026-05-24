@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from typing import Any, Dict, List, Optional, Generator
 
 AGENTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'agents')
+SUB_AGENTS_TMP_DIR = "/tmp/evonic-sub-agents"
 
 
 def _migrate_session_id(cursor, old_id: str, new_id: str) -> None:
@@ -14,6 +15,7 @@ def _migrate_session_id(cursor, old_id: str, new_id: str) -> None:
     cursor.execute("UPDATE chat_messages SET session_id = ? WHERE session_id = ?", (new_id, old_id))
     cursor.execute("UPDATE chat_summaries SET session_id = ? WHERE session_id = ?", (new_id, old_id))
     cursor.execute("UPDATE agent_state SET session_id = ? WHERE session_id = ?", (new_id, old_id))
+    cursor.execute("UPDATE session_state SET session_id = ? WHERE session_id = ?", (new_id, old_id))
 
 
 class AgentChatDB:
@@ -21,7 +23,13 @@ class AgentChatDB:
 
     def __init__(self, agent_id: str):
         self.agent_id = agent_id
-        agent_dir = os.path.join(AGENTS_DIR, agent_id)
+        # Sub-agents store their chat DB in a temp directory (they are ephemeral)
+        # so they don't pollute the persistent agents/ directory.
+        from backend.subagent_manager import subagent_manager
+        if subagent_manager.is_subagent(agent_id):
+            agent_dir = os.path.join(SUB_AGENTS_TMP_DIR, agent_id)
+        else:
+            agent_dir = os.path.join(AGENTS_DIR, agent_id)
         os.makedirs(agent_dir, exist_ok=True)
         self.db_path = os.path.join(agent_dir, 'chat.db')
         self._init_tables()
@@ -98,8 +106,23 @@ class AgentChatDB:
                 cursor.execute("ALTER TABLE chat_sessions ADD COLUMN archived BOOLEAN DEFAULT 0")
             except sqlite3.OperationalError:
                 pass
+            # Migration: add user_id column for UserMixin integration
+            try:
+                cursor.execute("ALTER TABLE chat_sessions ADD COLUMN user_id TEXT REFERENCES users(id)")
+            except sqlite3.OperationalError:
+                pass
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS agent_state (
+                    session_id TEXT PRIMARY KEY,
+                    content TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
+                )
+            """)
+            # Per-session state table -- stores mode/tasks/plan_file/states/auto_trivial per session_id.
+            # focus/focus_reason remain in agent_state (global) for cross-session busy rejection.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS session_state (
                     session_id TEXT PRIMARY KEY,
                     content TEXT NOT NULL,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -256,20 +279,33 @@ class AgentChatDB:
                         r['metadata'] = None
             return rows
 
-    def get_first_agent_request_metadata(self, session_id: str) -> dict | None:
-        """Return metadata of the first user message with agent_message=true in the session.
+    def get_latest_agent_request_metadata(self, session_id: str, sender_agent_id: str = None) -> Optional[dict]:
+        """Return metadata of the most recent user message with agent_message=true in the session.
 
         Used by auto-forward to locate report_to_id even when the originating
         message falls outside the recent-message window.
+
+        Args:
+            sender_agent_id: If provided, only match messages where
+                metadata->from_agent_id equals this value.
         """
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT metadata FROM chat_messages
-                WHERE session_id = ? AND role = 'user' AND metadata LIKE '%"agent_message"%'
-                ORDER BY created_at ASC LIMIT 1
-            """, (session_id,))
+            if sender_agent_id:
+                cursor.execute("""
+                    SELECT metadata FROM chat_messages
+                    WHERE session_id = ? AND role = 'user'
+                      AND metadata LIKE '%"agent_message"%'
+                      AND metadata LIKE ?
+                    ORDER BY created_at DESC LIMIT 1
+                """, (session_id, f'%"from_agent_id": "{sender_agent_id}"%'))
+            else:
+                cursor.execute("""
+                    SELECT metadata FROM chat_messages
+                    WHERE session_id = ? AND role = 'user' AND metadata LIKE '%"agent_message"%'
+                    ORDER BY created_at DESC LIMIT 1
+                """, (session_id,))
             row = cursor.fetchone()
             if not row or not row['metadata']:
                 return None
@@ -306,7 +342,7 @@ class AgentChatDB:
                 (self._AGENT_STATE_KEY, content))
             conn.commit()
 
-    def get_agent_state(self) -> str | None:
+    def get_agent_state(self) -> Optional[str]:
         with self._connect() as conn:
             # Try global key first
             row = conn.execute(
@@ -326,11 +362,65 @@ class AgentChatDB:
                 return row[0]
         return None
 
+    # -- Per-session state --
+
+    def upsert_session_state(self, session_id: str, content: str):
+        """Save session-level state (mode/tasks/plan_file/states/auto_trivial)."""
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO session_state (session_id, content, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+                (session_id, content))
+            conn.commit()
+
+    def get_session_state(self, session_id: str) -> Optional[str]:
+        """Get session-level state for a specific session_id.
+
+        If no session_state exists yet, performs one-time migration from the
+        global agent_state (__agent__): copies mode/tasks/plan_file/states/auto_trivial
+        to session_state while leaving focus/focus_reason in agent_state.
+        """
+        with self._connect() as conn:
+            # Try session-specific state first
+            row = conn.execute(
+                "SELECT content FROM session_state WHERE session_id = ?",
+                (session_id,)).fetchone()
+            if row:
+                return row[0]
+
+            # One-time migration: copy per-session fields from global agent_state
+            row = conn.execute(
+                "SELECT content FROM agent_state WHERE session_id = ?",
+                (self._AGENT_STATE_KEY,)).fetchone()
+            if row:
+                try:
+                    import json
+                    data = json.loads(row[0])
+                    # Extract only per-session fields
+                    session_data = {
+                        'mode': data.get('mode', 'plan'),
+                        'tasks': data.get('tasks', []),
+                        'next_task_id': data.get('next_task_id', 1),
+                        'plan_file': data.get('plan_file'),
+                        'states': data.get('states', {}),
+                        'auto_trivial': data.get('auto_trivial', False),
+                    }
+                    session_content = json.dumps(session_data)
+                    # Save to session_state
+                    conn.execute(
+                        "INSERT OR REPLACE INTO session_state (session_id, content, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+                        (session_id, session_content))
+                    conn.commit()
+                    return session_content
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return None
+
     def clear_session(self, session_id: str):
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
             cursor.execute("DELETE FROM chat_summaries WHERE session_id = ?", (session_id,))
+            cursor.execute("DELETE FROM session_state WHERE session_id = ?", (session_id,))
             # Do NOT delete agent_state — it is global per-agent, not per-session
             conn.commit()
 
@@ -368,6 +458,61 @@ class AgentChatDB:
                     updated_at = CURRENT_TIMESTAMP
             """, (session_id, summary, last_message_id, message_count, last_message_ts))
             conn.commit()
+
+    def get_agent_summaries(self, query: str = "", limit: int = 50) -> List[Dict[str, Any]]:
+        """List all session summaries for this agent with optional keyword filter.
+
+        Returns list of dicts containing session metadata and summary text.
+        Filtered to non-archived sessions only, sorted by most recently updated.
+
+        Args:
+            query: Optional keyword filter (searches summary text via LIKE).
+                   Empty string returns all sessions.
+            limit: Maximum number of results (max 50).
+        """
+        limit = min(limit, 50)
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            if query:
+                like_pattern = f"%{query}%"
+                cursor.execute("""
+                    SELECT
+                        cs.id AS session_id,
+                        cs.channel_id,
+                        cs.external_user_id,
+                        cs.created_at,
+                        cs.updated_at,
+                        COALESCE(csm.summary, '') AS summary,
+                        COALESCE(csm.message_count, 0) AS message_count
+                    FROM chat_sessions cs
+                    LEFT JOIN chat_summaries csm ON cs.id = csm.session_id
+                    WHERE cs.agent_id = ?
+                      AND (csm.summary IS NOT NULL AND csm.summary != '')
+                      AND csm.summary LIKE ?
+                      AND (cs.archived IS NULL OR cs.archived = 0)
+                    ORDER BY cs.updated_at DESC
+                    LIMIT ?
+                """, (self.agent_id, like_pattern, limit))
+            else:
+                cursor.execute("""
+                    SELECT
+                        cs.id AS session_id,
+                        cs.channel_id,
+                        cs.external_user_id,
+                        cs.created_at,
+                        cs.updated_at,
+                        COALESCE(csm.summary, '') AS summary,
+                        COALESCE(csm.message_count, 0) AS message_count
+                    FROM chat_sessions cs
+                    LEFT JOIN chat_summaries csm ON cs.id = csm.session_id
+                    WHERE cs.agent_id = ?
+                      AND (csm.summary IS NOT NULL AND csm.summary != '')
+                      AND (cs.archived IS NULL OR cs.archived = 0)
+                    ORDER BY cs.updated_at DESC
+                    LIMIT ?
+                """, (self.agent_id, limit))
+            return [dict(row) for row in cursor.fetchall()]
 
     def get_messages_after(self, session_id: str, after_id: int) -> List[Dict[str, Any]]:
         with self._connect() as conn:
@@ -435,6 +580,27 @@ class AgentChatDB:
                 (session_id,))
             conn.commit()
             return True
+
+    def archive_sessions_by_agent_id(self, agent_id: str) -> int:
+        """Archive all non-archived sessions whose agent_id matches.
+
+        Used to clean up sub-agent sessions when the sub-agent is destroyed.
+        Returns the number of sessions archived.
+        """
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id FROM chat_sessions WHERE agent_id = ? AND (archived IS NULL OR archived = 0)",
+                (agent_id,))
+            session_ids = [row[0] for row in cursor.fetchall()]
+            for sid in session_ids:
+                cursor.execute("DELETE FROM chat_messages WHERE session_id = ?", (sid,))
+                cursor.execute("DELETE FROM chat_summaries WHERE session_id = ?", (sid,))
+                cursor.execute(
+                    "UPDATE chat_sessions SET archived = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (sid,))
+            conn.commit()
+            return len(session_ids)
 
     def has_session(self, session_id: str) -> bool:
         with self._connect() as conn:
@@ -526,16 +692,37 @@ class AgentChatDB:
             return bool(row[0]) if row else True
 
     def get_latest_human_session(self, agent_id: str) -> Optional[Dict[str, Any]]:
-        """Return the most recent non-archived session belonging to a human user
-        (excludes __agent__ and __scheduler__ system user IDs)."""
+        """Return the most recent non-archived session belonging to a human user.
+
+        Priority:
+          1. Sessions with a real channel (channel_id IS NOT NULL) — Telegram, etc.
+          2. Fallback to web sessions (channel_id IS NULL) excluding test/system users.
+
+        Excludes __agent__ and __scheduler__ system user IDs.
+        """
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
+            # Priority 1: find a session with a real channel (Telegram, etc.)
             cursor.execute("""
                 SELECT * FROM chat_sessions
                 WHERE agent_id = ? AND (archived IS NULL OR archived = 0)
                   AND external_user_id NOT LIKE '__agent__%'
                   AND external_user_id != '__scheduler__'
+                  AND channel_id IS NOT NULL
+                ORDER BY updated_at DESC LIMIT 1
+            """, (agent_id,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            # Priority 2: fallback to web session (no channel), exclude test/system
+            cursor.execute("""
+                SELECT * FROM chat_sessions
+                WHERE agent_id = ? AND (archived IS NULL OR archived = 0)
+                  AND external_user_id NOT LIKE '__agent__%'
+                  AND external_user_id != '__scheduler__'
+                  AND external_user_id != 'web_test'
+                  AND external_user_id != '__system__'
                 ORDER BY updated_at DESC LIMIT 1
             """, (agent_id,))
             row = cursor.fetchone()
@@ -579,6 +766,38 @@ class AgentChatDB:
             cursor.execute("SELECT COUNT(*) FROM chat_messages")
             mc = cursor.fetchone()[0]
             return sc, mc
+
+    def get_web_fallback_session(self, agent_id: str,
+                                 exclude_session_id: str = None) -> Optional[Dict[str, Any]]:
+        """Return the most recent web session (channel_id IS NULL) for a human user.
+
+        Used by escalate_to_user as a secondary delivery target so the user
+        can also see escalated messages in the web UI.
+
+        Excludes __agent__, __scheduler__, and __system__ user IDs.
+        web_test is intentionally NOT excluded here — it IS the valid web
+        session for the user chatting via browser.
+        Optionally excludes a specific session_id (e.g., the primary channel session).
+        """
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            query = """
+                SELECT * FROM chat_sessions
+                WHERE agent_id = ? AND (archived IS NULL OR archived = 0)
+                  AND external_user_id NOT LIKE '__agent__%'
+                  AND external_user_id != '__scheduler__'
+                  AND external_user_id != '__system__'
+                  AND channel_id IS NULL
+            """
+            params = [agent_id]
+            if exclude_session_id:
+                query += " AND id != ?"
+                params.append(exclude_session_id)
+            query += " ORDER BY updated_at DESC LIMIT 1"
+            cursor.execute(query, params)
+            row = cursor.fetchone()
+            return dict(row) if row else None
 
     # ---- Long-term Memory ----
 
@@ -652,10 +871,14 @@ class AgentChatManager:
 
     def __init__(self):
         self._dbs: Dict[str, AgentChatDB] = {}
+        self._lock = threading.Lock()
 
     def get(self, agent_id: str) -> AgentChatDB:
         if agent_id not in self._dbs:
-            self._dbs[agent_id] = AgentChatDB(agent_id)
+            with self._lock:
+                # Double-check: another thread may have created it while we waited
+                if agent_id not in self._dbs:
+                    self._dbs[agent_id] = AgentChatDB(agent_id)
         return self._dbs[agent_id]
 
 

@@ -106,10 +106,28 @@ def _register_builtins():
 
         db.clear_session(session_id, agent_id)
 
+        # Clear in-memory loaded skill state so skill badges disappear from session state UI
+        from backend.agent_runtime import agent_runtime
+        agent_runtime._session_skill_mds.pop(session_id, None)
+        agent_runtime._session_skill_tools.pop(session_id, None)
+
         # Reset agent state so next turn starts fresh in plan mode (no stale execute state).
         from backend.agent_state import AgentState
         fresh = AgentState()
-        db.upsert_agent_state(fresh.serialize(), agent_id)
+        # Per-session: save to session_state
+        import json
+        session_data = {
+            'mode': fresh.mode,
+            'tasks': fresh.tasks,
+            'next_task_id': fresh._next_task_id,
+            'plan_file': fresh.plan_file,
+            'states': fresh.states,
+            'auto_trivial': fresh.auto_trivial,
+        }
+        db.upsert_session_state(session_id, json.dumps(session_data), agent_id=agent_id)
+        # Global: reset focus only
+        global_data = {'focus': fresh.focus, 'focus_reason': fresh.focus_reason}
+        db.upsert_agent_state(json.dumps(global_data), agent_id)
 
         now = __import__('datetime').datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
         # Truncate agent's llm.log file
@@ -156,8 +174,9 @@ def _register_builtins():
         except Exception:
             is_super = False
         lines = ["**Available commands:**"]
+        super_only = {"restart", "cd", "cwd"}
         for name, desc in commands:
-            if name == "restart" and not is_super:
+            if name in super_only and not is_super:
                 continue
             lines.append(f"- `/{name}` — {desc}")
         return "\n".join(lines)
@@ -223,6 +242,10 @@ def _register_builtins():
     ) -> str:
         from models.db import db
 
+        super_agent = db.get_super_agent()
+        if not super_agent or super_agent.get('id') != agent_id:
+            return "Permission denied: /cwd is only available to the super agent."
+
         agent = db.get_agent(agent_id)
         if not agent:
             return "Error: Agent not found."
@@ -249,9 +272,9 @@ def _register_builtins():
     ) -> str:
         from models.db import db
 
-        # super_agent = db.get_super_agent()
-        # if not super_agent or super_agent.get('id') != agent_id:
-        #     return "Permission denied: /cd is only available to the super agent."
+        super_agent = db.get_super_agent()
+        if not super_agent or super_agent.get('id') != agent_id:
+            return "Permission denied: /cd is only available to the super agent."
 
         if not args or not args.strip():
             return "Usage: /cd [path] — change workspace directory"
@@ -297,74 +320,26 @@ def _register_builtins():
         if not super_agent or super_agent.get('id') != agent_id:
             return "Permission denied: /restart is only available to the super agent."
 
-        # Persist caller info so the new process can notify them after boot
-        import json as _json
-
-        # Capture conversation context for contextual greeting after restart
-        # Uses DB summary (compact) + last messages (raw) instead of sessrecap.log
-        recent_context = ''
-        try:
-            # Get summary from chat_summaries table (compact LLM-generated summary)
-            summary_data = db.get_summary(session_id, agent_id=agent_id)
-            summary_text = summary_data.get('summary', '') if summary_data else ''
-
-            # Get last ~5 message pairs (limit=12 to be safe for user+assistant alternation)
-            last_messages = db.get_session_messages(session_id, limit=12, agent_id=agent_id)
-
-            # Build context string
-            parts = []
-            if summary_text:
-                parts.append('=== CONVERSATION SUMMARY ===')
-                parts.append(summary_text)
-
-            if last_messages:
-                parts.append('=== LAST MESSAGES ===')
-                # Pre-pass: find indices of restart tool calls + their triggering user messages
-                _restart_idx = set()
-                for _i, _m in enumerate(last_messages):
-                    _tcs = _m.get('tool_calls') or []
-                    if _m.get('role') == 'assistant' and any(
-                        isinstance(_tc, dict) and _tc.get('function', {}).get('name') == 'restart'
-                        for _tc in (_tcs if isinstance(_tcs, list) else [])
-                    ):
-                        _restart_idx.add(_i)
-                        if _i > 0:
-                            _restart_idx.add(_i - 1)
-                for _i, msg in enumerate(last_messages):
-                    if _i in _restart_idx:
-                        continue
-                    role = msg.get('role', 'unknown')
-                    # Skip tool result messages and assistant messages that are purely tool calls
-                    if role == 'tool':
-                        continue
-                    if role == 'assistant' and msg.get('tool_calls') and not (msg.get('content') or '').strip():
-                        continue
-                    content = msg.get('content', '') or ''
-                    # Skip user slash commands to prevent the LLM from re-issuing them
-                    if role == 'user' and content.startswith('/'):
-                        continue
-                    # Skip assistant responses to slash commands (metadata.slash_command)
-                    if role == 'assistant' and msg.get('metadata', {}).get('slash_command'):
-                        continue
-                    if content:
-                        parts.append(f'[{role}]: {content}')
-
-            recent_context = '\n\n'.join(parts)
-            # Truncate to ~3000 chars max
-            if len(recent_context) > 3000:
-                recent_context = recent_context[:3000] + '\n...(truncated)'
-
-            _logger.info("Captured %d chars context from DB (summary + last_messages)", len(recent_context))
-        except Exception as _e:
-            _logger.error("Failed to read context from DB: %s", _e, exc_info=True)
-            recent_context = ''
-
-        db.set_setting('restart_greeting_needed', _json.dumps({
+        # Persist caller info so the new process can send "Evonic ready!" after boot
+        import json
+        db.set_setting('restart_ready_needed', json.dumps({
             'channel_id': channel_id,
             'external_user_id': external_user_id,
             'session_id': session_id,
-            'context': recent_context,
+            'agent_id': agent_id,
         }))
+
+        # Clear fallback flag from agent_state before restart so the agent
+        # starts with its primary model after reboot
+        try:
+            from models.chat import agent_chat_manager as _restart_cm
+            _restart_raw = _restart_cm.get(agent_id).get_agent_state()
+            if _restart_raw:
+                _restart_data = json.loads(_restart_raw)
+                if _restart_data.pop('active_fallback_model_id', None):
+                    _restart_cm.get(agent_id).upsert_agent_state(json.dumps(_restart_data))
+        except Exception:
+            pass
 
         def _do_restart():
             import time
@@ -441,8 +416,22 @@ def _register_builtins():
         # Create a fresh AgentState in plan mode
         ms = AgentState()
 
-        # Persist state to dedicated agent_state table
-        agent_chat_manager.get(agent_id).upsert_agent_state(ms.serialize())
+        # Save per-session state (mode/tasks/plan_file) to session_state
+        _db = agent_chat_manager.get(agent_id)
+        session_data = {
+            'mode': ms.mode,
+            'tasks': ms.tasks,
+            'next_task_id': ms._next_task_id,
+            'plan_file': ms.plan_file,
+            'states': ms.states,
+            'auto_trivial': ms.auto_trivial,
+        }
+        import json
+        _db.upsert_session_state(session_id, json.dumps(session_data))
+
+        # Reset focus in global agent_state (focus is cross-session)
+        global_data = {'focus': ms.focus, 'focus_reason': ms.focus_reason}
+        _db.upsert_agent_state(json.dumps(global_data))
 
         return "Switched to plan mode."
 
@@ -450,6 +439,60 @@ def _register_builtins():
         "plan",
         plan_handler,
         "Switch to plan mode",
+    )
+
+    # /exec — Switch agent to execute mode
+    def exec_handler(
+        session_id: str,
+        agent_id: str,
+        external_user_id: str,
+        channel_id: Optional[str],
+        args: str,
+    ) -> str:
+        from models.db import db
+        from backend.agent_state import AgentState
+        from models.chat import agent_chat_manager
+
+        # Check if agent state is enabled for this agent
+        agent = db.get_agent(agent_id)
+        if not agent:
+            return "Error: Agent not found."
+
+        if not agent.get("enable_agent_state"):
+            return "Agent state is not enabled for this agent."
+
+        # Load current per-session state
+        _db = agent_chat_manager.get(agent_id)
+        session_content = _db.get_session_state(session_id)
+
+        if session_content:
+            ms = AgentState.deserialize(session_content)
+        else:
+            ms = AgentState()  # fresh plan-mode state
+
+        # Transition to execute mode
+        result = ms.set_mode("execute", reason="slash command /exec")
+        if "error" in result:
+            return f"Error: {result['error']}"
+
+        # Save per-session state (mode changed to execute)
+        import json
+        session_data = {
+            "mode": ms.mode,
+            "tasks": ms.tasks,
+            "next_task_id": ms._next_task_id,
+            "plan_file": ms.plan_file,
+            "states": ms.states,
+            "auto_trivial": ms.auto_trivial,
+        }
+        _db.upsert_session_state(session_id, json.dumps(session_data))
+
+        return "Switched to execute mode."
+
+    command_registry.register(
+        "exec",
+        exec_handler,
+        "Switch to execute mode",
     )
 
     def unfocus_handler(
@@ -479,6 +522,243 @@ def _register_builtins():
         "unfocus",
         unfocus_handler,
         "Force-clear focus mode — use when agent is stuck in focus after a failed task",
+    )
+
+    # /status — Show agent status information
+    def status_handler(
+        session_id: str,
+        agent_id: str,
+        external_user_id: str,
+        channel_id: Optional[str],
+        args: str,
+    ) -> str:
+        from models.db import db
+        from backend.agent_state import AgentState
+        from models.chat import agent_chat_manager
+
+        agent = db.get_agent(agent_id)
+        if not agent:
+            return "Error: Agent not found."
+
+        # Detect platform: messaging channels need compact output
+        is_compact = False
+        if channel_id:
+            channel = db.get_channel(channel_id)
+            if channel:
+                ch_type = channel.get("type", "")
+                is_compact = ch_type in ("telegram", "whatsapp")
+
+        lines = []
+        if is_compact:
+            lines.append(f"STATUS \u2014 {agent.get('name', agent_id)}")
+            lines.append(f"Session: {session_id}")
+        else:
+            lines.append(f"**Status \u2014 {agent.get('name', agent_id)}**")
+            lines.append(f"Session: {session_id}")
+
+        # Model — resolve the same way the runtime does:
+        # 1. Agent's default_model_id → llm_models table (agent-specific model config)
+        # 2. Fallback: agent.model raw string (General Settings override)
+        # 3. Otherwise: unknown
+        model = db.get_agent_default_model(agent_id)
+        if model:
+            model_name = model.get("name", "unknown")
+            model_id = model.get("model_name", "")
+            if model_id:
+                lines.append(f"Model: {model_name} ({model_id})")
+            else:
+                lines.append(f"Model: {model_name}")
+        elif agent.get("model"):
+            lines.append(f"Model: {agent['model']} (string override)")
+        else:
+            lines.append("Model: unknown")
+
+        # Agent state: per-session (mode/plan_file) from session_state, global (focus) from agent_state
+        _db = agent_chat_manager.get(agent_id)
+        session_content = _db.get_session_state(session_id)
+        if session_content:
+            sess_ms = AgentState.deserialize(session_content)
+            lines.append(f"Mode: {sess_ms.mode}")
+            if sess_ms.plan_file:
+                plan_path = os.path.join(os.path.dirname(__file__), "..", sess_ms.plan_file)
+                if os.path.exists(plan_path):
+                    lines.append(f"Plan file: {sess_ms.plan_file}")
+        else:
+            lines.append("Mode: plan")
+        # Focus (global) from agent_state
+        state_content = _db.get_agent_state()
+        if state_content:
+            ms = AgentState.deserialize(state_content)
+            if ms.focus:
+                reason = f" \u2014 {ms.focus_reason}" if ms.focus_reason else ""
+                lines.append(f"Focus: yes{reason}")
+            else:
+                lines.append("Focus: no")
+        else:
+            lines.append("Focus: no")
+
+        # Active model badge: check if fallback is active
+        if state_content:
+            try:
+                _state_data = json.loads(state_content) if isinstance(state_content, str) else state_content
+                _fb_active_id = _state_data.get('active_fallback_model_id')
+                if _fb_active_id:
+                    _active_m = db.get_model_by_id(_fb_active_id)
+                    if _active_m:
+                        _am_name = _active_m.get('name', _fb_active_id)
+                        lines.append(f"Active Model: {_am_name} (fallback)")
+                    else:
+                        lines.append(f"Active Model: {_fb_active_id} (fallback, unknown)")
+                else:
+                    # Show primary
+                    _prim_name = model.get('name', model.get('model_name', 'unknown')) if model else (agent.get('model', 'unknown'))
+                    lines.append(f"Active Model: {_prim_name} (primary)")
+            except Exception:
+                pass
+
+        # Workplace
+        workplace_id = agent.get("workplace_id")
+        if workplace_id:
+            workplace = db.get_workplace(workplace_id)
+            if workplace:
+                wp_name = workplace.get("name", "unknown")
+                wp_type = workplace.get("type", "unknown")
+                wp_status = workplace.get("status", "disconnected")
+                lines.append(f"Workplace: {wp_name} ({wp_type}, {wp_status})")
+            else:
+                lines.append("Workplace: not found")
+        else:
+            lines.append("Workplace: none")
+
+        # Workspace
+        workspace = agent.get("workspace")
+        if workspace:
+            lines.append(f"Workspace: {workspace}")
+        else:
+            lines.append("Workspace: not configured")
+
+        # Toggles
+        sandbox = "enabled" if agent.get("sandbox_enabled") else "disabled"
+        safety = "enabled" if agent.get("safety_checker_enabled") else "disabled"
+        vision = "enabled" if agent.get("vision_enabled") else "disabled"
+        agent_msg = "enabled" if agent.get("agent_messaging_enabled") else "disabled"
+        if is_compact:
+            lines.append(f"Toggles: Sandbox={sandbox}, Safety={safety}, Vision={vision}, Msg={agent_msg}")
+        else:
+            lines.append("Toggles:")
+            lines.append(f"  Sandbox: {sandbox}")
+            lines.append(f"  Safety Checker: {safety}")
+            lines.append(f"  Vision: {vision}")
+            lines.append(f"  Agent Messaging: {agent_msg}")
+
+        # Tools and skills count
+        tools = db.get_agent_tools(agent_id)
+        skills = db.get_agent_skills(agent_id)
+        if is_compact:
+            lines.append(f"Tools: {len(tools)}  |  Skills: {len(skills)}")
+        else:
+            lines.append(f"Tools: {len(tools)}")
+            lines.append(f"Skills: {len(skills)}")
+
+        # Channels
+        channels = db.get_channels(agent_id)
+        if channels:
+            from backend.channels.registry import channel_manager
+            if is_compact:
+                ch_parts = []
+                for ch in channels:
+                    ch_name = ch.get("name", "unknown")
+                    ch_type = ch.get("type", "unknown")
+                    ch_id = ch.get("id", "")
+                    is_connected = channel_manager.is_running(ch_id)
+                    status = "connected" if is_connected else "disconnected"
+                    ch_parts.append(f"{ch_name} ({ch_type})={status}")
+                lines.append(f"Channels: {', '.join(ch_parts)}")
+            else:
+                lines.append("Channels:")
+                for ch in channels:
+                    ch_name = ch.get("name", "unknown")
+                    ch_type = ch.get("type", "unknown")
+                    ch_id = ch.get("id", "")
+                    is_connected = channel_manager.is_running(ch_id)
+                    status = "connected" if is_connected else "disconnected"
+                    lines.append(f"  {ch_name} ({ch_type}) \u2014 {status}")
+
+        # Web: double newline between every field so markdown renders each as
+        # a separate paragraph (single \n would collapse into one line).
+        # Telegram/WhatsApp: single newline for a compact, clean layout.
+        if is_compact:
+            return "\n".join(lines)
+        else:
+            return "\n\n".join(lines)
+
+    command_registry.register(
+        "status",
+        status_handler,
+        "Show agent status information",
+    )
+
+    # /model — Show or set the agent's LLM model
+    def model_handler(
+        session_id: str,
+        agent_id: str,
+        external_user_id: str,
+        channel_id: Optional[str],
+        args: str,
+    ) -> str:
+        from models.db import db
+
+        if not args or not args.strip():
+            # No args — show current model
+            model = db.get_agent_default_model(agent_id)
+            if model:
+                model_name = model.get("name", "unknown")
+                model_id = model.get("model_name", "")
+                if model_id:
+                    return f"Current model: {model_name} ({model_id})"
+                else:
+                    return f"Current model: {model_name}"
+            else:
+                return "No model configured. Use `/model <id>` to set one."
+
+        # Set model
+        new_model_id = args.strip()
+        model = db.get_model_by_id(new_model_id)
+        if not model:
+            # Try matching by model_name field too
+            model = db.get_model_by_model_name(new_model_id)
+        if not model:
+            # List available models so user knows what's valid
+            all_models = db.get_llm_models()
+            if all_models:
+                lines = [f"Model '{new_model_id}' not found. Available models:"]
+                for m in all_models:
+                    m_name = m.get("name", "unknown")
+                    m_model = m.get("model_name", "")
+                    if m_model:
+                        lines.append(f"- {m_name} ({m_model})")
+                    else:
+                        lines.append(f"- {m_name}")
+                return "\n".join(lines)
+            else:
+                return f"Model '{new_model_id}' not found and no models are configured."
+
+        # Set the agent's default model
+        success = db.set_agent_default_model(agent_id, model["id"])
+        if not success:
+            return f"Failed to set model to '{new_model_id}'."
+
+        model_name = model.get("name", "unknown")
+        model_model = model.get("model_name", "")
+        if model_model:
+            return f"Model set to: {model_name} ({model_model})"
+        else:
+            return f"Model set to: {model_name}"
+
+    command_registry.register(
+        "model",
+        model_handler,
+        "Show or set agent's LLM model — /model [id]",
     )
 
 

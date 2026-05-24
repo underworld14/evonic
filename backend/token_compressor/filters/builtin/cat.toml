@@ -1,0 +1,9 @@
+[filter]
+command = "^cat\\b"
+description = "Compact cat — strip blanks, cap line length"
+strip_ansi = true
+strip_lines = [
+    '^\\s*$',
+]
+truncate_lines_at = 200
+max_lines = 100

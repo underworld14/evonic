@@ -28,7 +28,7 @@
             {% for run in runs %}
             <tr class="history-row" onclick="window.location.href='/history/{{ run.run_id }}'" style="cursor: pointer;">
                 <td class="col-id">
-                    <span class="run-id">#{{ "%04d"|format(run.run_id) }}</span>
+                    <span class="run-id">#{{ run.run_id }}</span>
                 </td>
                 <td class="col-model" style="max-width: 200px; word-break: break-all;">{{ run.model_name or 'default' }}</td>
                 <td class="col-time" style="font-size: 0.85rem;">

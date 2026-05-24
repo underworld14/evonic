@@ -19,6 +19,7 @@ Usage:
     # or
     result = check_safety(script, tool_type='bash')
 """
+from __future__ import annotations
 
 import ast
 import logging
@@ -47,7 +48,7 @@ def _compile(patterns: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # A. Destructive Commands (requires_approval, score 8-14)
 DESTRUCTIVE_PATTERNS: list[dict[str, Any]] = [
     # File destruction
-    {"pattern": r"\brm\s+(-[a-zA-Z]*[rf][a-zA-Z]*|-[rf][a-zA-Z]*)\s+(?!/tmp/)", "weight": 10, "category": "file_destruction", "description": "Destructive file removal command (rm -rf, except /tmp)"},
+    {"pattern": r"\brm\s+(-[a-zA-Z]*[rf][a-zA-Z]*|-[rf][a-zA-Z]*)\s+(?!/tmp/|__pycache__|\.cache|\.DS_Store|\.tox|\.mypy_cache|\.pytest_cache|\.eggs|build/|\.next|\.nuxt)", "weight": 10, "category": "file_destruction", "description": "Destructive file removal command (rm -rf, except safe cleanup targets)"},
     {"pattern": r"\brmdir\s+(-[a-zA-Z]*)?\b", "weight": 8, "category": "directory_destruction", "description": "Directory removal command"},
     {"pattern": r"\bshred\b", "weight": 12, "category": "secure_deletion", "description": "Secure file deletion (shred)"},
     {"pattern": r"\bgit\s+add\s+\.", "weight": 8, "category": "git_staging", "description": "Git add all files (git add .)"},
@@ -117,8 +118,8 @@ DANGEROUS_PATTERNS: list[dict[str, Any]] = [
     {"pattern": r"\bid_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?\b", "weight": 12, "category": "ssh_key", "description": "Reference to SSH private/public key file"},
     {"pattern": r"\bauthorized_keys2?\b", "weight": 10, "category": "ssh_key", "description": "Reference to authorized_keys file"},
     {"pattern": r"\bknown_hosts\b", "weight": 8, "category": "ssh_key", "description": "Reference to known_hosts file"},
-    # Docker escape
-    {"pattern": r"\bdocker\s+", "weight": 15, "category": "sandbox_escape", "description": "Docker command (sandbox escape risk)"},
+    # Docker reference (allowed — sandbox is already Docker-isolated)
+    {"pattern": r"\bdocker\s+", "weight": 4, "category": "sandbox_escape", "description": "Docker reference (not blocked, sandbox is already isolated)"},
     # Network exploit
     {"pattern": r"(?:^|\s)nc\s+", "weight": 12, "category": "network_exploit", "description": "Netcat command (network exploit)"},
     {"pattern": r"\bnetcat\b", "weight": 12, "category": "network_exploit", "description": "Netcat command (network exploit)"},
@@ -151,8 +152,8 @@ SENSITIVE_FILE_PATTERNS: list[dict[str, Any]] = [
 
 # E. Bash-specific dangerous patterns
 BASH_DANGEROUS_PATTERNS: list[dict[str, Any]] = [
-    {"pattern": r"\brm\s+(-[a-zA-Z]*[rf][a-zA-Z]*|-[rf][a-zA-Z]*)\s+(?!/tmp/)", "weight": 10, "category": "file_destruction", "description": "Destructive file removal command (rm -rf, except /tmp)"},
-    {"pattern": r"\bdocker\s+", "weight": 15, "category": "sandbox_escape", "description": "Docker command (sandbox escape risk)"},
+    {"pattern": r"\brm\s+(-[a-zA-Z]*[rf][a-zA-Z]*|-[rf][a-zA-Z]*)\s+(?!/tmp/|__pycache__|\.cache|\.DS_Store|\.tox|\.mypy_cache|\.pytest_cache|\.eggs|build/|\.next|\.nuxt)", "weight": 10, "category": "file_destruction", "description": "Destructive file removal command (rm -rf, except safe cleanup targets)"},
+    {"pattern": r"\bdocker\s+", "weight": 4, "category": "sandbox_escape", "description": "Docker reference (not blocked, sandbox is already isolated)"},
     {"pattern": r"(?:^|\s)nc\s+", "weight": 12, "category": "network_exploit", "description": "Netcat command (network exploit)"},
     {"pattern": r"\bnetcat\b", "weight": 12, "category": "network_exploit", "description": "Netcat command (network exploit)"},
     {"pattern": r"reverse\s*shell", "weight": 15, "category": "network_exploit", "description": "Reverse shell pattern"},
@@ -225,15 +226,29 @@ SQLITE_ACCESS_PATTERNS: list[dict[str, Any]] = [
 # These patterns detect destructive SQL operations.  When combined with
 # sqlite_access patterns above, the cumulative score triggers approval
 # or outright rejection.  Regex is case-insensitive (via _compile).
+#
+# IMPORTANT: Each pattern requires a SQL-like identifier after the keyword to
+# avoid false positives on natural language (e.g. "drop database connection",
+# "delete from the list", "truncate the file").  The _SQL_ID helper matches
+# unquoted identifiers, double-quoted names, backtick-quoted names, and
+# bracket-quoted names.  Common English words are excluded via negative
+# lookahead to further reduce false positives.
+_SQL_ID = r'(?:[A-Za-z_][\w.]*|["`][^"`]+["`]|\[[^\]]+\])'
+_SQL_ENG = (r'(?!the\b|a\b|an\b|to\b|for\b|with\b|from\b|in\b|on\b|at\b|'
+            r'by\b|of\b|is\b|was\b|are\b|be\b|it\b|this\b|that\b|and\b|or\b|'
+            r'not\b|no\b|connection\b|support\b|list\b|file\b|code\b|output\b|'
+            r'concept\b|todo\b|module\b|old\b|unused\b|feature\b|version\b|'
+            r'array\b|design\b|slow\b)')
+
 SQL_DESTRUCTIVE_PATTERNS: list[dict[str, Any]] = [
-    # Data deletion
-    {"pattern": r"\bDROP\s+TABLE\b", "weight": 12, "category": "sql_destructive", "description": "DROP TABLE - permanently deletes a table"},
-    {"pattern": r"\bDROP\s+DATABASE\b", "weight": 15, "category": "sql_destructive", "description": "DROP DATABASE - permanently deletes entire database"},
-    {"pattern": r"\bDROP\s+INDEX\b", "weight": 10, "category": "sql_destructive", "description": "DROP INDEX - deletes a database index"},
-    {"pattern": r"\bDROP\s+VIEW\b", "weight": 10, "category": "sql_destructive", "description": "DROP VIEW - deletes a database view"},
-    {"pattern": r"\bTRUNCATE\s+(?:TABLE\s+)?", "weight": 12, "category": "sql_destructive", "description": "TRUNCATE - removes all rows from a table"},
-    {"pattern": r"\bDELETE\s+FROM\b", "weight": 10, "category": "sql_destructive", "description": "DELETE FROM - deletes rows from a table"},
-    {"pattern": r"\bALTER\s+TABLE\b.*\bDROP\b", "weight": 12, "category": "sql_destructive", "description": "ALTER TABLE ... DROP - destructive schema change"},
+    # Data deletion — require SQL identifier after keyword
+    {"pattern": r"\bDROP\s+TABLE\s+" + _SQL_ENG + _SQL_ID, "weight": 12, "category": "sql_destructive", "description": "DROP TABLE - permanently deletes a table"},
+    {"pattern": r"\bDROP\s+DATABASE\s+" + _SQL_ENG + _SQL_ID, "weight": 15, "category": "sql_destructive", "description": "DROP DATABASE - permanently deletes entire database"},
+    {"pattern": r"\bDROP\s+INDEX\s+" + _SQL_ENG + _SQL_ID, "weight": 10, "category": "sql_destructive", "description": "DROP INDEX - deletes a database index"},
+    {"pattern": r"\bDROP\s+VIEW\s+" + _SQL_ENG + _SQL_ID, "weight": 10, "category": "sql_destructive", "description": "DROP VIEW - deletes a database view"},
+    {"pattern": r"\bTRUNCATE\s+(?:TABLE\s+)?" + _SQL_ENG + _SQL_ID, "weight": 12, "category": "sql_destructive", "description": "TRUNCATE - removes all rows from a table"},
+    {"pattern": r"\bDELETE\s+FROM\s+" + _SQL_ENG + _SQL_ID, "weight": 10, "category": "sql_destructive", "description": "DELETE FROM - deletes rows from a table"},
+    {"pattern": r"\bALTER\s+TABLE\s+" + _SQL_ENG + _SQL_ID + r".*\bDROP\b", "weight": 12, "category": "sql_destructive", "description": "ALTER TABLE ... DROP - destructive schema change"},
 ]
 
 # Pre-compiled regex patterns (module-level, avoids recompiling on each call)

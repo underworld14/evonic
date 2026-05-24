@@ -63,7 +63,7 @@ def api_create_model():
         return jsonify({"success": False, "error": "type must be remote or local"}), 400
 
     # Validate provider
-    valid_providers = ("openrouter", "togetherai", "ollama", "ollama_cloud", "opencode_zen", "opencode_go", "kimi_coding", "llama.cpp", "custom")
+    valid_providers = ("openrouter", "togetherai", "ollama", "ollama_cloud", "opencode_zen", "opencode_go", "kimi_coding", "deepseek", "llama.cpp", "custom")
     if data["provider"] not in valid_providers:
         return jsonify(
             {"success": False, "error": f"provider must be one of {valid_providers}"}
@@ -150,6 +150,38 @@ def api_delete_model(model_id):
     return jsonify({"success": True})
 
 
+@models_bp.route("/api/models/<model_id>/clone", methods=["POST"])
+def api_clone_model(model_id):
+    """Clone an existing model with new ID, keeping all config except default flag."""
+    source = db.get_model_by_id(model_id)
+    if not source:
+        return jsonify({"success": False, "error": "Model not found"}), 404
+
+    new_id = str(uuid.uuid4())
+    clone_data = {
+        "id": new_id,
+        "name": f"Copy of {source['name']}",
+        "type": source.get("type"),
+        "provider": source.get("provider"),
+        "base_url": source.get("base_url"),
+        "api_key": source.get("api_key"),
+        "model_name": source.get("model_name"),
+        "max_tokens": source.get("max_tokens", 32768),
+        "timeout": source.get("timeout", 60),
+        "thinking": source.get("thinking", 0),
+        "thinking_budget": source.get("thinking_budget", 0),
+        "temperature": source.get("temperature"),
+        "enabled": source.get("enabled", 1),
+        "is_default": 0,
+        "model_max_concurrent": source.get("model_max_concurrent", 1),
+        "api_format": source.get("api_format", "openai"),
+        "vision_supported": source.get("vision_supported", 0),
+        "attachments_supported": source.get("attachments_supported", 0),
+    }
+    db.create_model(clone_data)
+    return jsonify({"success": True, "model_id": new_id})
+
+
 @models_bp.route("/api/models/<model_id>/set-default", methods=["POST"])
 def api_set_default_model(model_id):
     """Set a model as global default."""
@@ -230,7 +262,7 @@ def api_test_model(model_id):
 
 @models_bp.route("/api/agents/<agent_id>/model", methods=["GET"])
 def api_get_agent_model(agent_id):
-    """Get agent's default model."""
+    """Get agent's default model and fallback model."""
     agent = db.get_agent(agent_id)
     if not agent:
         return jsonify({"error": "Agent not found"}), 404
@@ -238,27 +270,41 @@ def api_get_agent_model(agent_id):
     model = db.get_agent_default_model(agent_id)
     if model:
         _sanitize_model(model)
+    fallback_model = db.get_agent_fallback_model(agent_id)
+    if fallback_model:
+        _sanitize_model(fallback_model)
     return jsonify(
         {
             "agent_id": agent_id,
             "default_model_id": agent.get("default_model_id"),
             "model": model,
+            "fallback_model_id": agent.get("fallback_model_id"),
+            "fallback_model": fallback_model,
         }
     )
 
 
 @models_bp.route("/api/agents/<agent_id>/model", methods=["POST"])
 def api_set_agent_model(agent_id):
-    """Set agent's default model."""
+    """Set agent's default model and/or fallback model."""
     agent = db.get_agent(agent_id)
     if not agent:
         return jsonify({"error": "Agent not found"}), 404
 
     data = request.get_json()
     model_id = data.get("model_id") if data else None
+    fallback_model_id = data.get("fallback_model_id") if data else None
 
+    # Set primary model (None means "clear" → use global default)
     success = db.set_agent_default_model(agent_id, model_id)
-    if not success:
-        return jsonify({"success": False, "error": "Failed to set model"}), 400
+    if not success and model_id:
+        return jsonify({"success": False, "error": "Failed to set primary model"}), 400
+
+    # Set fallback model (None means "clear" → no fallback)
+    # Only set if explicitly provided (even if None)
+    if "fallback_model_id" in (data or {}):
+        fb_success = db.set_agent_fallback_model(agent_id, fallback_model_id)
+        if not fb_success and fallback_model_id:
+            return jsonify({"success": False, "error": "Failed to set fallback model"}), 400
 
     return jsonify({"success": True})

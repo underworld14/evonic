@@ -8,7 +8,9 @@ import json
 import os
 import re
 import shutil
+import secrets
 import subprocess
+import tempfile
 
 import requests
 
@@ -87,6 +89,14 @@ PROVIDER_DEFAULTS = {
         # omit reasoning_content on prior assistant messages.
         "default_thinking": True,
     },
+    "deepseek": {
+        "type": "remote",
+        "base_url": "https://api.deepseek.com",
+        "api_key_required": True,
+        "placeholder_model": "deepseek-v4-pro",
+        "label": "DeepSeek",
+        "description": "Cloud · API key required",
+    },
     "llama.cpp": {
         "type": "local",
         "base_url": "http://localhost:8080/v1",
@@ -127,49 +137,38 @@ LANGUAGE_PRESETS = {
     },
 }
 
-TONE_PRESETS = {
-    "professional": {
-        "label": "Professional",
-        "description": "Clear, formal, business-appropriate communication",
-        "prompt_prefix": (
-            "## Communication Style\n\n"
-            "Communicate in a professional, clear, and formal tone. "
-            "Be direct and precise. Avoid slang, humor, and casual language.\n\n"
-        ),
-    },
-    "friendly": {
-        "label": "Friendly",
-        "description": "Warm, approachable, conversational",
-        "prompt_prefix": (
-            "## Communication Style\n\n"
-            "Communicate in a warm, friendly, and approachable tone. "
-            "Be conversational and encouraging. Use natural, human language.\n\n"
-        ),
-    },
-    "concise": {
-        "label": "Concise",
-        "description": "Minimal, to-the-point, no fluff",
-        "prompt_prefix": (
-            "## Communication Style\n\n"
-            "Be extremely concise. Give the shortest correct answer possible. "
-            "Skip pleasantries and filler text. Prefer bullet points over paragraphs.\n\n"
-        ),
-    },
-    "technical": {
-        "label": "Technical",
-        "description": "Detailed, precise, assumes technical audience",
-        "prompt_prefix": (
-            "## Communication Style\n\n"
-            "Communicate with technical precision. Assume the user has strong technical background. "
-            "Include relevant technical details, code references, and specific terminology.\n\n"
-        ),
-    },
-    "custom": {
-        "label": "Custom",
-        "description": "Define your own tone and style",
-        "prompt_prefix": "",  # user-provided text is used instead
-    },
-}
+
+
+# ---------------------------------------------------------------------------
+# Notes.md template
+# ---------------------------------------------------------------------------
+
+_NOTES_MD_TEMPLATE = """# Notes.md -- User Preferences & Instructions
+
+This file stores your user's personal preferences, tastes, language
+preferences, and communication style instructions.
+
+## What to store here
+
+- User's preferred language (e.g. "User prefers Bahasa Indonesia")
+- Communication style preferences (e.g. "User likes concise answers",
+  "User dislikes emoji")
+- Personal instructions (e.g. "Call the user 'Pak'")
+- Tastes and preferences (e.g. "User prefers bullet points over paragraphs")
+- Execution instructions (e.g. "Always use tmux/screen/nohup for long-running programs like cmake/make build, unit testing, benchmarking, etc.")
+
+## What NOT to store here (use `remember` instead)
+
+- Factual/memorization data: addresses, phone numbers, email, birthday
+- Secret/sensitive data: passwords, tokens, PINs, secret codes, bank accounts
+
+## Usage
+
+- Read this file: read("notes.md")
+- Update via write_file with path /_self/kb/notes.md
+- Update immediately when the user gives a new preference
+- Prioritize notes.md over `remember` for non-factual preference information
+"""
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -306,10 +305,13 @@ def test_connection(base_url: str, api_key: str = None) -> dict:
         return {"success": False, "message": str(e)}
 
 
-def build_system_prompt(tone_id: str, custom_tone_text: str = None) -> str:
+def build_system_prompt(tone_text: str = "") -> str:
     """
-    Build the super agent system prompt by prepending the tone block to the
-    default prompt in defaults/super_agent_system_prompt.md.
+    Build the super agent system prompt from the default template.
+
+    Reads defaults/super_agent_system_prompt.md and replaces the
+    {communication_style} placeholder with the given tone_text.
+    If the placeholder is absent, the template is returned as-is.
     """
     default_path = os.path.join(
         config.BASE_DIR, "defaults", "super_agent_system_prompt.md"
@@ -319,15 +321,9 @@ def build_system_prompt(tone_id: str, custom_tone_text: str = None) -> str:
         with open(default_path, "r", encoding="utf-8") as f:
             base_prompt = f.read()
 
-    preset = TONE_PRESETS.get(tone_id, TONE_PRESETS["professional"])
-    if tone_id == "custom" and custom_tone_text:
-        tone_block = "## Communication Style\n\n" + custom_tone_text.strip() + "\n\n"
-    elif preset["prompt_prefix"]:
-        tone_block = preset["prompt_prefix"]
-    else:
-        tone_block = ""
-
-    return tone_block + base_prompt
+    if "{communication_style}" in base_prompt:
+        return base_prompt.replace("{communication_style}", tone_text.strip())
+    return base_prompt
 
 
 def _derive_agent_id(name: str) -> str:
@@ -349,8 +345,6 @@ def run_setup(
     api_key: str,
     agent_name: str,
     agent_id: str = None,
-    tone: str = "professional",
-    custom_tone_text: str = None,
     description: str = "",
     language: str = "english",
     sandbox_enabled: bool = False,
@@ -359,7 +353,7 @@ def run_setup(
     """
     Execute first-time setup:
     1. Create LLM model entry in DB and set as default
-    2. Build system prompt with tone
+    2. Build system prompt
     3. Create super agent with is_super=True
     4. Write SYSTEM.md
     5. Assign default tools
@@ -399,6 +393,13 @@ def run_setup(
     resolved_base_url = (base_url or provider_cfg["base_url"]).rstrip("/")
 
     try:
+        # 0. Generate SECRET_KEY if not already set — critical for session security
+        if not os.getenv("SECRET_KEY"):
+            _key = secrets.token_urlsafe(48)
+            env_path = os.path.join(config.BASE_DIR, ".env")
+            _update_env_var(env_path, "SECRET_KEY", _key)
+            os.environ["SECRET_KEY"] = _key
+
         # 1. Create model in DB as default
         model_id = f"setup_{provider}"
         # Derive api_format: ollama + local → openai, ollama + remote → ollama native
@@ -425,7 +426,7 @@ def run_setup(
         )
 
         # 2. Build system prompt
-        system_prompt = build_system_prompt(tone, custom_tone_text)
+        system_prompt = build_system_prompt()
 
         # 3. Create super agent
         _ensure_kb_dir(agent_id)
@@ -445,7 +446,7 @@ def run_setup(
         # 4. Write SYSTEM.md on disk
         _write_system_prompt(agent_id, system_prompt)
 
-        # 4.5 Copy default knowledge base file
+        # 4.5 Copy default knowledge base files
         _default_kb = os.path.join(
             config.BASE_DIR, "defaults", "super_agent_kb_evonic.md"
         )
@@ -454,6 +455,20 @@ def run_setup(
             os.makedirs(_kb_dir, exist_ok=True)
             shutil.copy2(_default_kb, os.path.join(_kb_dir, "evonic.md"))
 
+        # 4.5.1 Copy reminder-and-schedule-creation-rules.md (scheduler/reminder guide)
+        _scheduler_kb = os.path.join(config.BASE_DIR, 'defaults', 'reminder-and-schedule-creation-rules.md')
+        if os.path.isfile(_scheduler_kb):
+            _kb_dir = os.path.join(config.BASE_DIR, "agents", agent_id, "kb")
+            os.makedirs(_kb_dir, exist_ok=True)
+            shutil.copy2(_scheduler_kb, os.path.join(_kb_dir, "reminder-and-schedule-creation-rules.md"))
+
+        # 4.6 Create notes.md template for user preferences
+        _notes_md_path = os.path.join(config.BASE_DIR, "agents", agent_id, "kb", "notes.md")
+        if not os.path.isfile(_notes_md_path):
+            os.makedirs(os.path.dirname(_notes_md_path), exist_ok=True)
+            with open(_notes_md_path, 'w', encoding='utf-8') as _f:
+                _f.write(_NOTES_MD_TEMPLATE)
+
         # 5. Assign default tools
         db.set_agent_tools(
             agent_id, ["bash", "runpy", "patch", "write_file", "read_file"]
@@ -461,7 +476,6 @@ def run_setup(
 
         # 6. Store settings
         db.set_setting("super_agent_id", agent_id)
-        db.set_setting("super_agent_tone", tone)
         db.set_setting("agent_language", language)
         db.set_setting("sandbox_default_enabled", "1" if sandbox_enabled else "0")
 
@@ -495,13 +509,29 @@ def run_setup(
         if password:
             from werkzeug.security import generate_password_hash
 
-            pw_hash = generate_password_hash(password)
+            pw_hash = generate_password_hash(password, method="pbkdf2:sha256")
             env_path = os.path.join(config.BASE_DIR, ".env")
             _update_env_var(env_path, "ADMIN_PASSWORD_HASH", pw_hash)
 
         return {"success": True, "agent_id": agent_id}
 
     except Exception as e:
+        # Roll back partial DB state so retries work:
+        # the agent (created at step 3) and model (created at step 1).
+        # Use raw SQL because db.delete_agent() refuses to delete super agents.
+        try:
+            with db._connect() as conn:
+                conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
+                conn.execute("DELETE FROM agent_tools WHERE agent_id = ?", (agent_id,))
+                conn.commit()
+        except Exception:
+            pass
+        try:
+            with db._connect() as conn:
+                conn.execute("DELETE FROM llm_models WHERE id = ?", (model_id,))
+                conn.commit()
+        except Exception:
+            pass
         return {"error": str(e)}
 
 
@@ -510,8 +540,6 @@ def run_reconfigure(
     model_name: str,
     base_url: str,
     api_key: str,
-    tone: str = "professional",
-    custom_tone_text: str = None,
     language: str = "english",
     sandbox_enabled: bool = False,
     password: str = "",
@@ -519,10 +547,10 @@ def run_reconfigure(
     """
     Reconfigure an existing Evonic setup:
     1. Update or create LLM model entry in DB and set as default
-    2. Build new system prompt with tone and language
+    2. Build new system prompt with language
     3. Update super agent's system prompt
     4. Update agent sandbox setting
-    5. Store settings (tone, language, sandbox)
+    5. Store settings (language, sandbox)
     6. Update admin password if provided
 
     Returns {'success': True, 'agent_id': str} or {'error': str}.
@@ -577,10 +605,10 @@ def run_reconfigure(
             model_data["thinking"] = 1 if provider_cfg.get("default_thinking") else 0
             db.create_model(model_data)
 
-        # 2. Build new system prompt (tone + language)
-        tone_prompt = build_system_prompt(tone, custom_tone_text)
+        # 2. Build new system prompt (with language)
+        base_prompt = build_system_prompt()
         lang_cfg = LANGUAGE_PRESETS.get(language, LANGUAGE_PRESETS["english"])
-        full_prompt = tone_prompt + "\n" + lang_cfg["instruction"] + "\n"
+        full_prompt = base_prompt + "\n" + lang_cfg["instruction"] + "\n"
 
         # 3. Get super agent and update
         super_agent = db.get_super_agent()
@@ -601,7 +629,6 @@ def run_reconfigure(
         db.update_agent(agent_id, {"sandbox_enabled": 1 if sandbox_enabled else 0})
 
         # 5. Store settings
-        db.set_setting("super_agent_tone", tone)
         db.set_setting("agent_language", language)
         db.set_setting("sandbox_default_enabled", "1" if sandbox_enabled else "0")
 
@@ -609,7 +636,7 @@ def run_reconfigure(
         if password:
             from werkzeug.security import generate_password_hash
 
-            pw_hash = generate_password_hash(password)
+            pw_hash = generate_password_hash(password, method="pbkdf2:sha256")
             env_path = os.path.join(config.BASE_DIR, ".env")
             _update_env_var(env_path, "ADMIN_PASSWORD_HASH", pw_hash)
 
@@ -620,7 +647,11 @@ def run_reconfigure(
 
 
 def _update_env_var(env_path, key, value):
-    """Update or add an environment variable in a .env file."""
+    """Update or add an environment variable in a .env file.
+
+    Uses atomic write (write-to-temp-then-rename) so the .env file is
+    never left empty or truncated if the process crashes mid-write.
+    """
     if not os.path.exists(env_path):
         with open(env_path, "w") as f:
             f.write(f"{key}={value}\n")
@@ -638,5 +669,16 @@ def _update_env_var(env_path, key, value):
             lines.append("\n")
         lines.append(f"{key}={value}\n")
 
-    with open(env_path, "w") as f:
-        f.writelines(lines)
+    # Atomic write: write to temp file in same directory, then rename.
+    # os.replace() is atomic on POSIX and Windows (same filesystem).
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(env_path),
+                                        prefix=".env.")
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            f.writelines(lines)
+        os.replace(tmp_path, env_path)
+    except Exception:
+        # Clean up temp file on failure — don't leave litter behind.
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise

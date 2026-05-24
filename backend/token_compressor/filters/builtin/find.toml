@@ -1,0 +1,12 @@
+[filter]
+command = "^find\\b"
+description = "Compact find — paths only, no permission errors"
+strip_ansi = true
+strip_lines = [
+    '^find: .*Permission denied',
+    '^find: .*No such file',
+]
+max_lines = 100
+head_lines = 80
+tail_lines = 20
+on_empty = "find: no results"

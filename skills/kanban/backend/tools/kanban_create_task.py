@@ -67,6 +67,16 @@ def execute(agent: dict, args: dict) -> dict:
     created = kanban_db.create(task_data)
     kanban_db.log_task_created(created['id'])
 
+    # Handle dependencies if provided
+    dependencies = args.get('dependencies')
+    if dependencies is not None:
+        try:
+            deps = [int(d) for d in dependencies]
+            if deps:
+                kanban_db.set_dependencies(created['id'], deps)
+        except (ValueError, TypeError) as e:
+            return {'status': 'error', 'message': str(e)}
+
     return {
         'status': 'success',
         'task': created,

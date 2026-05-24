@@ -4,7 +4,7 @@ from flask import jsonify, redirect, request, session, url_for
 import re
 import logging
 
-from dotenv import load_dotenv
+from backend.dotenv_loader import load_dotenv
 load_dotenv()
 
 from backend.logging_config import configure as configure_logging
@@ -34,6 +34,8 @@ from routes.health import health_bp
 from routes.workplaces import workplaces_bp
 from routes.logs import logs_bp
 from routes.safety_rules import safety_rules_bp
+from routes.update import update_bp
+from routes.rtk import rtk_bp
 import config
 from backend.version import get_version
 
@@ -43,8 +45,27 @@ from flask_sock import Sock
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
 app = Flask(__name__)
+
+# Add plugin template directories to Jinja loader
+from jinja2 import ChoiceLoader, FileSystemLoader
+from backend.plugin_lifecycle import PLUGINS_DIR
+from pathlib import Path
+_plugin_template_dirs = []
+if Path(PLUGINS_DIR).exists():
+    for plugin_dir in Path(PLUGINS_DIR).iterdir():
+        tpl_dir = plugin_dir / 'templates'
+        if tpl_dir.exists():
+            _plugin_template_dirs.append(str(tpl_dir))
+app.jinja_loader = ChoiceLoader([
+    app.jinja_loader,
+    FileSystemLoader(_plugin_template_dirs)
+])
 sock = Sock(app)
-app.secret_key = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
+app.secret_key = config.SECRET_KEY
+
+# Make session permanent so it survives mobile browser backgrounding / restarts
+from datetime import timedelta
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
 
 # Global upload size limit (defense-in-depth for all endpoints)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB
@@ -68,6 +89,8 @@ app.register_blueprint(health_bp)
 app.register_blueprint(workplaces_bp)
 app.register_blueprint(logs_bp)
 app.register_blueprint(safety_rules_bp)
+app.register_blueprint(update_bp)
+app.register_blueprint(rtk_bp)
 
 
 # ---- Backward-compatible redirect: /settings/* → /system/* ----
@@ -82,6 +105,11 @@ def redirect_settings_to_system(subpath=None):
 from backend.plugin_manager import plugin_manager
 for plugin_id, bp in plugin_manager.get_blueprints().items():
     app.register_blueprint(bp)
+
+# Register injection guard for tool-level prompt injection detection
+from backend.tools.injection_guard import injection_tool_guard
+from backend.plugin_hooks import register_tool_guard
+register_tool_guard(injection_tool_guard)
 
 # Display plugin and skill loading summary on startup
 loaded_plugins = [p['id'] for p in plugin_manager.list_plugins() if plugin_manager._is_plugin_enabled(p['id'])]
@@ -141,7 +169,7 @@ if not _reloader_active or _is_reloader_child:
     from backend.channels.registry import channel_manager
     channel_manager.start_all_enabled()
 
-    # Register Cloud Workplace connector WebSocket endpoint (served on main port via flask-sock)
+    # Register Tunnel Workplace connector WebSocket endpoint (served on main port via flask-sock)
     from backend.workplaces.connector_relay import connector_relay
 
     @sock.route('/ws/connector')
@@ -152,21 +180,81 @@ if not _reloader_active or _is_reloader_child:
     from backend.scheduler import scheduler as global_scheduler
     global_scheduler.start()
 
-    # If this boot was triggered by /restart, send a system notification to the agent
-    _restart_flag = db.get_setting('restart_greeting_needed')
-    if _restart_flag:
+    # If this boot was triggered by /restart, send "Evonic ready!" (no LLM)
+    _restart_ready_flag = db.get_setting('restart_ready_needed')
+    if _restart_ready_flag:
         import threading as _threading
         import json as _json
 
-        def _send_restart_notification():
+        def _send_restart_ready():
             import time as _time
             _time.sleep(5.0)  # Wait for channels + agent_runtime to fully initialize
             try:
-                _data = _json.loads(_restart_flag)
+                _data = _json.loads(_restart_ready_flag)
+                _channel_id = _data.get('channel_id')
+                _user_id = _data.get('external_user_id')
+                _session_id = _data.get('session_id')
+                _agent_id = _data.get('agent_id')
+                _log.info("Sending 'Evonic ready!' (channel=%s, user=%s, session=%s)",
+                           _channel_id, _user_id, _session_id)
+
+                if _channel_id is not None:
+                    # Messaging channel (Telegram, WhatsApp, etc.)
+                    from backend.channels.registry import channel_manager
+                    _channel = channel_manager.get_channel_instance(_channel_id)
+                    if _channel:
+                        _channel.send_message(_user_id, "Evonic ready!")
+                        _log.info("'Evonic ready!' sent via channel %s", _channel_id)
+                    else:
+                        _log.warning("Channel %s not found, cannot send restart ready message",
+                                     _channel_id)
+                elif _session_id and _agent_id:
+                    # Web chat — inject directly as system message (no LLM)
+                    # Write to SQLite DB so it appears in chat history
+                    db.add_chat_message(_session_id, 'system', 'Evonic ready!',
+                                        agent_id=_agent_id, metadata={'restart_ready': True})
+                    # Write to JSONL chatlog so it appears when polling
+                    from models.chatlog import chatlog_manager
+                    _cl = chatlog_manager.get(_agent_id, _session_id)
+                    _cl.append({'type': 'system', 'session_id': _session_id,
+                                'content': 'Evonic ready!',
+                                'metadata': {'restart_ready': True}})
+                    # Emit SSE event for any reconnected clients
+                    from backend.event_stream import event_stream
+                    event_stream.emit('message_received', {
+                        'agent_id': _agent_id,
+                        'session_id': _session_id,
+                        'external_user_id': _user_id,
+                        'channel_id': None,
+                        'message': 'Evonic ready!',
+                    })
+                    _log.info("'Evonic ready!' sent via web chat (session=%s)", _session_id)
+                else:
+                    _log.warning("No channel_id or session_id available, cannot send restart ready message")
+
+                db.set_setting('restart_ready_needed', '')
+                _log.info("Restart ready flag cleared")
+
+            except Exception as _e:
+                _log.error("Failed to send restart ready message: %s", _e, exc_info=True)
+
+        _threading.Thread(target=_send_restart_ready, daemon=True).start()
+
+    # If this boot was triggered by restart tool, send LLM greeting with context
+    _restart_greeting_flag = db.get_setting('restart_greeting_needed')
+    if _restart_greeting_flag:
+        import threading as _threading
+        import json as _json
+
+        def _send_restart_greeting():
+            import time as _time
+            _time.sleep(5.0)  # Wait for channels + agent_runtime to fully initialize
+            try:
+                _data = _json.loads(_restart_greeting_flag)
                 _channel_id = _data.get('channel_id')
                 _user_id = _data.get('external_user_id')
                 _context = _data.get('context', '')
-                _log.info("Sending system notification (channel=%s, user=%s, context_len=%d)",
+                _log.info("Sending restart greeting (channel=%s, user=%s, context_len=%d)",
                            _channel_id, _user_id, len(_context))
 
                 _super_agent = db.get_super_agent()
@@ -174,7 +262,6 @@ if not _reloader_active or _is_reloader_child:
                     _log.warning("No super agent found, skipping greeting")
                     return
 
-                # Build self-contained system notification (like kanban task reminders)
                 _trigger_msg = '[SYSTEM] Restart greeting needed\n'
                 if _context and _context.strip():
                     _trigger_msg += f'\n<restart_context>\n{_context}\n</restart_context>\n'
@@ -187,14 +274,13 @@ if not _reloader_active or _is_reloader_child:
                     channel_id=_channel_id,
                 )
 
-                # Clear flag after successful send
                 db.set_setting('restart_greeting_needed', '')
-                _log.info("System notification sent, flag cleared")
+                _log.info("Restart greeting sent, flag cleared")
 
             except Exception as _e:
-                _log.error("Failed to send restart notification: %s", _e, exc_info=True)
+                _log.error("Failed to send restart greeting: %s", _e, exc_info=True)
 
-        _threading.Thread(target=_send_restart_notification, daemon=True).start()
+        _threading.Thread(target=_send_restart_greeting, daemon=True).start()
 
     # ----------------------------------------------------------------
     # Startup check: scan all active sessions for unreplied user messages
@@ -314,16 +400,21 @@ def enforce_auth():
         return None  # Evonet connector authenticates via Bearer token, not session
     if request.path.startswith('/static/'):
         return None
+    if request.path.startswith('/webhook'):
+        return None  # Plugin webhook endpoints handle their own auth
+    if request.path.startswith('/plugin/'):
+        return None  # Plugin routes handle their own auth internally
     if request.path in ('/login', '/logout'):
         return None
 
-    # --- Setup flow: when no super agent exists, allow setup endpoints ---
+    # Setup endpoints handle their own auth/state validation — always allow them
+    if request.path == '/setup':
+        return None
+    if request.path in ('/api/setup', '/api/setup/test-connection', '/api/setup/docker-status'):
+        return None
+
+    # --- Setup flow: when no super agent exists, redirect everything else ---
     if not db.has_super_agent():
-        if request.path == '/setup':
-            return None
-        if request.path in ('/api/setup', '/api/setup/test-connection', '/api/setup/docker-status'):
-            return None
-        # All other requests redirect to setup
         if request.path.startswith('/api/'):
             return jsonify({'error': 'Super agent setup required', 'setup_required': True}), 503
         return redirect('/setup')

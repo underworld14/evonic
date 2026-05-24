@@ -7,8 +7,8 @@ import re
 import json
 import uuid
 import queue
-from typing import Dict, Any, List
-from flask import Blueprint, render_template, jsonify, request, Response, stream_with_context
+from typing import Dict, Any, List, Optional
+from flask import Blueprint, render_template, jsonify, request, Response, session, stream_with_context
 from models.db import db
 from models.chatlog import chatlog_manager, _DISPLAY_TYPES
 from backend.tools import tool_registry
@@ -16,6 +16,32 @@ from backend.tools import tool_registry
 agents_bp = Blueprint('agents', __name__)
 
 _SENSITIVE_AGENT_KEYS = frozenset({'workspace'})
+
+_NOTES_MD_TEMPLATE = """# Notes.md -- User Preferences & Instructions
+
+This file stores your user's personal preferences, tastes, language
+preferences, and communication style instructions.
+
+## What to store here
+
+- User's preferred language (e.g. "User prefers Bahasa Indonesia")
+- Communication style preferences (e.g. "User likes concise answers",
+  "User dislikes emoji")
+- Personal instructions (e.g. "Call the user 'Pak'")
+- Tastes and preferences (e.g. "User prefers bullet points over paragraphs")
+
+## What NOT to store here (use `remember` instead)
+
+- Factual/memorization data: addresses, phone numbers, email, birthday
+- Secret/sensitive data: passwords, tokens, PINs, secret codes, bank accounts
+
+## Usage
+
+- Read this file: read("notes.md")
+- Update via write_file with path /_self/kb/notes.md
+- Update immediately when the user gives a new preference
+- Prioritize notes.md over `remember` for non-factual preference information
+"""
 
 
 def _sanitize_agent(agent: Dict[str, Any]) -> Dict[str, Any]:
@@ -29,6 +55,15 @@ def _sanitize_agents(agents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for a in agents:
         _sanitize_agent(a)
     return agents
+
+
+def _apply_sandbox_workplace_policy(agent_data: dict, workplace_id: Optional[str]) -> None:
+    """Docker sandbox is only supported on local workplaces."""
+    if not workplace_id:
+        return
+    workplace = db.get_workplace(workplace_id)
+    if workplace and workplace.get('type') in ('remote', 'tunnel'):
+        agent_data['sandbox_enabled'] = 0
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AGENTS_DIR = os.path.join(BASE_DIR, 'agents')
@@ -171,11 +206,13 @@ def api_create_agent():
         return jsonify({'error': 'Invalid ID. Use only lowercase alphanumeric characters and underscores (snake_case).'}), 400
     if db.get_agent(agent_id):
         return jsonify({'error': 'Agent ID already exists.'}), 400
-    # Docker Sandbox only available for local workplace mode
-    if data.get('sandbox_enabled') and data.get('workplace_id'):
-        workplace = db.get_workplace(data['workplace_id'])
-        if workplace and workplace.get('type') in ('remote', 'cloud'):
-            data['sandbox_enabled'] = 0
+    if len(data.get('name', '')) > 200:
+        return jsonify({'error': 'Name too long (max 200 characters).'}), 400
+    if len(data.get('description', '')) > 2000:
+        return jsonify({'error': 'Description too long (max 2000 characters).'}), 400
+    if len(data.get('system_prompt', '')) > 102400:
+        return jsonify({'error': 'System prompt too long (max 100 KB).'}), 400
+    _apply_sandbox_workplace_policy(data, data.get('workplace_id'))
     try:
         _ensure_kb_dir(agent_id)
         # Set default workspace for regular agents to shared/agents/[agent-id]
@@ -185,6 +222,18 @@ def api_create_agent():
         # Create workspace directory if it does not already exist
         os.makedirs(data['workspace'], exist_ok=True)
         _write_system_prompt(agent_id, data.get('system_prompt', ''))
+        # Create artifacts directory
+        _artifacts_dir(agent_id)
+        # Inject artifacts instructions into SYSTEM.md if enabled
+        artifacts_enabled = data.get('artifacts_enabled')
+        if artifacts_enabled is None or artifacts_enabled:
+            _ensure_artifacts_prompt(agent_id, True)
+            db.add_agent_tool(agent_id, 'save_artifact')
+        # Create notes.md template if it does not already exist
+        _notes_md = os.path.join(_kb_dir(agent_id), 'notes.md')
+        if not os.path.isfile(_notes_md):
+            with open(_notes_md, 'w', encoding='utf-8') as _f:
+                _f.write(_NOTES_MD_TEMPLATE)
         agent = db.get_agent(agent_id)
         agent['system_prompt'] = _read_system_prompt(agent_id, fallback=agent.get('system_prompt', ''))
         return jsonify({'success': True, 'agent': _sanitize_agent(agent)})
@@ -201,14 +250,20 @@ def api_update_agent(agent_id):
     # Super agent cannot be disabled
     if existing.get('is_super') and data.get('enabled') is False:
         return jsonify({'error': 'Super agent cannot be disabled.'}), 403
-    # Docker Sandbox only available for local workplace mode
     target_workplace_id = data.get('workplace_id', existing.get('workplace_id'))
-    if data.get('sandbox_enabled') and target_workplace_id:
-        workplace = db.get_workplace(target_workplace_id)
-        if workplace and workplace.get('type') in ('remote', 'cloud'):
-            data['sandbox_enabled'] = 0
+    _apply_sandbox_workplace_policy(data, target_workplace_id)
     if 'system_prompt' in data:
         _write_system_prompt(agent_id, data['system_prompt'])
+    # Handle artifacts_enabled toggle: inject/remove SYSTEM.md instructions
+    if 'artifacts_enabled' in data:
+        old_artifacts = existing.get('artifacts_enabled', True) if existing.get('artifacts_enabled') is not None else True
+        new_artifacts = bool(data['artifacts_enabled'])
+        if new_artifacts != old_artifacts:
+            _ensure_artifacts_prompt(agent_id, new_artifacts)
+            if new_artifacts:
+                db.add_agent_tool(agent_id, 'save_artifact')
+            else:
+                db.remove_agent_tool(agent_id, 'save_artifact')
     db.update_agent(agent_id, data)
     agent = db.get_agent(agent_id)
     agent['system_prompt'] = _read_system_prompt(agent_id, fallback=agent.get('system_prompt', ''))
@@ -441,6 +496,192 @@ def api_delete_kb_file(agent_id, filename):
         return jsonify({'error': 'File not found'}), 404
     os.remove(fpath)
     return jsonify({'success': True})
+
+
+def _artifacts_dir(agent_id: str) -> str:
+    d = os.path.join(WORKSPACE_DIR, agent_id, 'artifacts')
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+_ARTIFACT_PROMPT_TEMPLATE = """
+## Artifacts Feature
+
+You have an **Artifacts** feature that allows you to save files you produce during your work. Files are stored in your dedicated artifacts directory and are accessible via the web UI.
+
+### Using save_artifact Tool
+
+Use the **save_artifact** tool to save files:
+- `filename`: the name of the file (e.g. 'report.md', 'analysis.txt', 'output.json')
+- `content`: the text content of the file (or base64-encoded content for binary files)
+- `mime_type`: optional MIME type hint
+- `mode`: set to 'text' (default) for text files, or 'base64' for binary files (PDFs, images, etc.)
+
+When to use this tool:
+- After completing analysis or research, save the findings as a report
+- After generating code, configuration, or any output, save it as an artifact
+- After creating images, PDFs, or markdown documents
+- Any time you produce a file that the user or other agents may want to reference later
+- For binary files (PDFs, images), set `mode: "base64"` and provide base64-encoded content
+
+### Alternative: Using write_file or bash/runpy
+
+You can also save files directly to your artifacts directory using:
+- `write_file` with path starting with `/workspace/shared/agents/<YOUR_AGENT_ID>/artifacts/<filename>`
+- bash/runpy by writing files to the same directory path
+
+This is particularly useful for binary files (PDFs, images) that you generate via Python scripts.
+
+The files are stored in your dedicated artifacts directory and can be browsed and downloaded from the agent detail page in the Artifacts tab.
+"""
+
+
+def _ensure_artifacts_prompt(agent_id: str, enabled: bool):
+    """Inject or remove the Artifacts instructions from the agent's SYSTEM.md."""
+    path = _system_prompt_path(agent_id)
+    prompt_text = _ARTIFACT_PROMPT_TEMPLATE.strip()
+
+    if not os.path.isfile(path):
+        return
+
+    with open(path, 'r', encoding='utf-8') as f:
+        sp = f.read()
+
+    if enabled:
+        # Inject if not already present
+        if prompt_text not in sp:
+            sp = sp.rstrip() + '\n\n' + prompt_text + '\n'
+            _write_system_prompt(agent_id, sp)
+    else:
+        # Remove if present
+        if prompt_text in sp:
+            sp = sp.replace(prompt_text, '').strip()
+            _write_system_prompt(agent_id, sp)
+
+
+# ==================== Agent Artifacts API ====================
+
+
+@agents_bp.route('/api/agents/<agent_id>/artifacts', methods=['GET'])
+def api_list_artifacts(agent_id):
+    if not db.get_agent(agent_id):
+        return jsonify({'error': 'Agent not found'}), 404
+    artifacts_dir = _artifacts_dir(agent_id)
+    if not os.path.isdir(artifacts_dir):
+        return jsonify({'files': []})
+    
+    sort_param = request.args.get('sort', 'newest')
+    query = (request.args.get('q', '') or '').strip().lower()
+    type_filter = (request.args.get('type', '') or '').strip().lower()
+    
+    # File type category detection
+    def _get_file_category(fname):
+        ext = os.path.splitext(fname)[1].lower()
+        if ext in ('.md', '.pdf'):
+            return 'document'
+        if ext in ('.txt', '.csv', '.json', '.yaml', '.yml', '.xml', '.log',
+                   '.py', '.c', '.rs', '.js', '.ts', '.jsx', '.tsx', '.cpp', '.cc', '.cxx',
+                   '.h', '.hpp', '.java', '.go', '.rb', '.php', '.cs', '.swift', '.kt',
+                   '.scala', '.r', '.m', '.sh', '.bash', '.zsh', '.ps1', '.sql',
+                   '.html', '.css', '.scss', '.less', '.toml', '.ini', '.cfg', '.conf',
+                   '.env', '.lock', '.diff', '.patch', '.Makefile', '.Dockerfile',
+                   '.vue', '.svelte', '.lua', '.pl', '.pm', '.gradle', '.groovy'):
+            return 'text'
+        if ext in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp', '.ico'):
+            return 'image'
+        if ext in ('.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a', '.wma'):
+            return 'sound'
+        if ext in ('.mp4', '.webm', '.mov', '.avi', '.mkv', '.m4v'):
+            return 'video'
+        return 'data'
+    
+    files = []
+    for fname in sorted(os.listdir(artifacts_dir)):
+        fpath = os.path.join(artifacts_dir, fname)
+        if not os.path.isfile(fpath):
+            continue
+        
+        # Apply search filter
+        if query and query not in fname.lower():
+            continue
+        
+        # Apply type filter
+        cat = _get_file_category(fname)
+        if type_filter and type_filter != 'all' and cat != type_filter:
+            continue
+        
+        stat = os.stat(fpath)
+        files.append({
+            'filename': fname,
+            'size': stat.st_size,
+            'modified': stat.st_mtime,
+            'category': cat,
+        })
+    
+    # Sort
+    if sort_param == 'updated':
+        files.sort(key=lambda f: f['modified'], reverse=True)
+    elif sort_param == 'alpha':
+        files.sort(key=lambda f: f['filename'].lower())
+    elif sort_param == 'alpha_desc':
+        files.sort(key=lambda f: f['filename'].lower(), reverse=True)
+    else:  # newest
+        files.sort(key=lambda f: f['modified'], reverse=True)
+    
+    return jsonify({'files': files})
+
+
+@agents_bp.route('/api/agents/<agent_id>/artifacts/<path:filename>', methods=['GET'])
+def api_get_artifact(agent_id, filename):
+    if not db.get_agent(agent_id):
+        return jsonify({'error': 'Agent not found'}), 404
+    if '/' in filename or '\\' in filename or '..' in filename:
+        return jsonify({'error': 'Invalid filename'}), 400
+    fpath = os.path.join(_artifacts_dir(agent_id), filename)
+    if not os.path.isfile(fpath):
+        return jsonify({'error': 'File not found'}), 404
+    from flask import send_file
+    import mimetypes
+    mime, _ = mimetypes.guess_type(filename)
+    if mime is None:
+        mime = 'application/octet-stream'
+    return send_file(fpath, mimetype=mime, as_attachment=False)
+
+
+@agents_bp.route('/api/agents/<agent_id>/artifacts/<path:filename>', methods=['DELETE'])
+def api_delete_artifact(agent_id, filename):
+    if not db.get_agent(agent_id):
+        return jsonify({'error': 'Agent not found'}), 404
+    if not session.get('authenticated'):
+        return jsonify({'error': 'Authentication required'}), 401
+    if '/' in filename or '\\' in filename or '..' in filename:
+        return jsonify({'error': 'Invalid filename'}), 400
+    fpath = os.path.join(_artifacts_dir(agent_id), filename)
+    if not os.path.isfile(fpath):
+        return jsonify({'error': 'File not found'}), 404
+    os.remove(fpath)
+    return jsonify({'success': True})
+
+
+@agents_bp.route('/api/agents/<agent_id>/artifacts', methods=['POST'])
+def api_create_artifact(agent_id):
+    if not db.get_agent(agent_id):
+        return jsonify({'error': 'Agent not found'}), 404
+    data = request.get_json()
+    filename = data.get('filename', '').strip()
+    content = data.get('content', '')
+    if not filename:
+        return jsonify({'error': 'filename is required'}), 400
+    if '/' in filename or '\\' in filename or '..' in filename:
+        return jsonify({'error': 'Invalid filename'}), 400
+    artifacts_dir = _artifacts_dir(agent_id)
+    fpath = os.path.join(artifacts_dir, filename)
+    try:
+        with open(fpath, 'w', encoding='utf-8') as f:
+            f.write(content)
+        return jsonify({'success': True, 'filename': filename})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 # ==================== Agent Avatar API ====================
@@ -734,11 +975,17 @@ def api_whatsapp_bridge_status(agent_id, channel_id):
 @agents_bp.route('/api/channels/whatsapp-bridge/<channel_id>/callback', methods=['POST'])
 def api_whatsapp_callback(channel_id):
     """Receive incoming WhatsApp messages from the Baileys sidecar."""
+    import hmac
     from backend.channels.registry import channel_manager
     import threading
     instance = channel_manager.get_channel_instance(channel_id)
     if not instance or instance.get_channel_type() != 'whatsapp':
         return jsonify({'error': 'Channel not found'}), 404
+    # Validate Bearer token set by the sidecar at startup
+    auth_header = request.headers.get('Authorization', '')
+    expected = f'Bearer {instance._callback_secret}'
+    if not hmac.compare_digest(auth_header, expected):
+        return jsonify({'error': 'Unauthorized'}), 401
     payload = request.get_json(silent=True) or {}
     threading.Thread(target=instance.handle_callback, args=(payload,), daemon=True).start()
     return jsonify({'ok': True})
@@ -750,8 +997,9 @@ def api_whatsapp_callback(channel_id):
 def api_compiled_prompt(agent_id):
     if not db.get_agent(agent_id):
         return jsonify({'error': 'Agent not found'}), 404
+    user_id = request.args.get('user_id', 'anonymous')
     from backend.agent_runtime import agent_runtime
-    context = agent_runtime.get_compiled_context(agent_id)
+    context = agent_runtime.get_compiled_context(agent_id, user_id=user_id)
     return jsonify(context)
 
 
@@ -810,7 +1058,9 @@ def api_chat(agent_id):
             'success': True,
             'response': result['response'],
             'tool_trace': result.get('tool_trace', []),
-            'timeline': result.get('timeline', [])
+            'timeline': result.get('timeline', []),
+            'slash_command': result.get('slash_command', False),
+            'clear_ui': result.get('clear_ui', False),
         }
         if result.get('error'):
             resp['error'] = True
@@ -933,10 +1183,92 @@ def api_chat_summary(agent_id):
 
 @agents_bp.route('/api/agents/<agent_id>/chat/state', methods=['GET'])
 def api_chat_agent_state(agent_id):
+    """Return merged agent state (global + per-session fields).
+
+    Global fields (focus, focus_reason) come from agent_state.
+    Per-session fields (mode, tasks, plan_file, states, auto_trivial) come from
+    session_state when ?session_id= is passed — matching how _restore_agent_state
+    and _persist_agent_state_split work in the runtime.
+    """
     from backend.agent_state import AgentState
-    content = db.get_agent_state(agent_id=agent_id)
-    if content:
-        state = AgentState.deserialize(content)
+    import json as _json
+
+    agent_content = db.get_agent_state(agent_id=agent_id)
+    agent_data = _json.loads(agent_content) if agent_content else {}
+
+    session_id = request.args.get('session_id', '').strip()
+    loaded_skills = []
+    if session_id:
+        session_content = db.get_session_state(session_id, agent_id=agent_id)
+        session_data = _json.loads(session_content) if session_content else {}
+        merged = {**agent_data, **session_data}
+
+        # Resolve loaded skills for this session
+        try:
+            from backend.agent_runtime import agent_runtime
+            from backend.skills_manager import skills_manager
+            # Start with skills that have tools (inject_tools)
+            seen_skill_ids = set()
+            for sk in agent_runtime.get_session_skills(session_id):
+                sk_id = sk['skill_id']
+                seen_skill_ids.add(sk_id)
+                try:
+                    name = skills_manager.get_skill_name(sk_id)
+                except Exception:
+                    name = sk_id  # fallback to skill_id on error
+                loaded_skills.append({
+                    'skill_id': sk_id,
+                    'name': name,
+                    'tool_count': sk.get('tool_count', 0),
+                })
+            # Also include prompt-only skills (system_md only, no inject_tools)
+            for sk_id in agent_runtime._session_skill_mds.get(session_id, {}):
+                if sk_id not in seen_skill_ids:
+                    try:
+                        name = skills_manager.get_skill_name(sk_id)
+                    except Exception:
+                        name = sk_id
+                    loaded_skills.append({
+                        'skill_id': sk_id,
+                        'name': name,
+                        'tool_count': 0,
+                    })
+        except Exception:
+            pass
+    else:
+        merged = agent_data
+
+    if merged:
+        state = AgentState.deserialize(_json.dumps(merged))
+        # Resolve active model badge
+        active_model = None
+        fb_id = agent_data.get('active_fallback_model_id')
+        if fb_id:
+            fb_model = db.get_model_by_id(fb_id)
+            if fb_model:
+                active_model = {
+                    'name': fb_model.get('name', fb_id),
+                    'model_name': fb_model.get('model_name', fb_id),
+                    'is_fallback': True,
+                    'id': fb_id,
+                }
+            else:
+                active_model = {
+                    'name': fb_id,
+                    'model_name': fb_id,
+                    'is_fallback': True,
+                    'id': fb_id,
+                }
+        else:
+            # Show primary model
+            prim_model = db.get_agent_default_model(agent_id)
+            if prim_model:
+                active_model = {
+                    'name': prim_model.get('name', 'unknown'),
+                    'model_name': prim_model.get('model_name', 'unknown'),
+                    'is_fallback': False,
+                    'id': prim_model.get('id', ''),
+                }
         return jsonify({
             'mode': state.mode,
             'tasks': state.tasks,
@@ -944,8 +1276,10 @@ def api_chat_agent_state(agent_id):
             'states': state.states,
             'focus': state.focus,
             'focus_reason': state.focus_reason,
+            'active_model': active_model,
+            'loaded_skills': loaded_skills,
         })
-    return jsonify({'mode': None})
+    return jsonify({'mode': None, 'active_model': None, 'loaded_skills': loaded_skills})
 
 
 @agents_bp.route('/api/agents/<agent_id>/chat/clear', methods=['POST'])
@@ -1086,20 +1420,32 @@ def api_chat_stream(agent_id):
     # fetch and this SSE subscription, avoiding duplicate delivery of already-seen events.
     after_seq = request.args.get('after', 0, type=int)
 
-    # Snapshot buffered events BEFORE subscribing so we don't miss any live events
-    # emitted between the snapshot and the subscription.
+    # Subscribe to live events BEFORE snapshotting the buffer. This ensures no events
+    # are lost in the window between snapshot and subscribe. Overlap (events captured
+    # by both snapshot and live handler) is safely deduplicated by seq on the client.
+    for event_name, handler in handlers.items():
+        event_stream.on(event_name, handler)
+
+    event_stream.register_web_listener(session_id)
+
+    # Snapshot buffered events after subscribing — any event emitted after this point
+    # is caught by the live handler; events before are in the snapshot.
     buffered_raw = event_stream.get_session_events(session_id, after_seq)
 
     # Only pre-fill events from the current in-progress turn.
     # Treat turn_complete and session_clear as "boundary" events — discard everything
     # up to and including the last one so a fresh SSE connection never replays a
     # completed turn or a past session_clear that would wipe the UI.
-    last_complete = -1
-    for i, e in enumerate(buffered_raw):
-        if e['event'] in ('turn_complete', 'session_clear'):
-            last_complete = i
-    if last_complete >= 0:
-        buffered_raw = buffered_raw[last_complete + 1:]
+    # IMPORTANT: Only strip on fresh connections (after_seq == 0). On reconnections
+    # (after_seq > 0), the client hasn't seen these events yet and needs them —
+    # especially turn_complete which finalizes the thinking bubble.
+    if after_seq == 0:
+        last_complete = -1
+        for i, e in enumerate(buffered_raw):
+            if e['event'] in ('turn_complete', 'session_clear'):
+                last_complete = i
+        if last_complete >= 0:
+            buffered_raw = buffered_raw[last_complete + 1:]
 
     # Prune resolved approval cycles — if an approval_required has already been
     # followed by a matching approval_resolved, discard both. Only keep the most
@@ -1128,12 +1474,6 @@ def api_chat_stream(agent_id):
                     del active_approvals[aid]
     if discard_set:
         buffered_raw = [e for i, e in enumerate(buffered_raw) if i not in discard_set]
-
-    # Subscribe to live events
-    for event_name, handler in handlers.items():
-        event_stream.on(event_name, handler)
-
-    event_stream.register_web_listener(session_id)
 
     # Pre-fill the queue with buffered events so a reconnecting client immediately
     # sees the in-progress reasoning trace without waiting for the next live event.
@@ -1337,3 +1677,243 @@ def api_agent_busy(agent_id):
         result['session_id'] = entry.get('session_id')
         result['elapsed'] = entry.get('elapsed')
     return jsonify(result)
+
+
+@agents_bp.route('/api/agents/status/stream', methods=['GET'])
+def api_agents_status_stream():
+    """SSE endpoint — pushes real-time agent busy/idle status changes.
+
+    Subscribes to the 'agent_busy_changed' event (emitted by AgentRuntime
+    when an agent starts or finishes an LLM turn) and forwards changes as
+    SSE events to every connected client.  No session filtering — the
+    browser-side JS decides which agent card to update.
+
+    Events:
+        event: agent_busy_changed
+        data: {"agent_id": "...", "busy": true|false, "session_id": "..."}
+    """
+    import queue as _queue
+    from backend.event_stream import event_stream
+
+    q = _queue.Queue(maxsize=200)
+
+    def handler(data):
+        try:
+            payload = {
+                'agent_id': data.get('agent_id', ''),
+                'busy': data.get('busy', False),
+                'session_id': data.get('session_id', ''),
+            }
+            q.put_nowait(payload)
+        except _queue.Full:
+            pass
+
+    event_stream.on('agent_busy_changed', handler)
+
+    def generate():
+        try:
+            while True:
+                try:
+                    payload = q.get(timeout=30)
+                except _queue.Empty:
+                    # Heartbeat to keep the connection alive through proxies
+                    yield ': heartbeat\n\n'
+                    continue
+                yield f'event: agent_busy_changed\ndata: {json.dumps(payload)}\n\n'
+        finally:
+            event_stream.off('agent_busy_changed', handler)
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive',
+        }
+    )
+
+
+# ==================== Portal API ====================
+
+
+@agents_bp.route('/api/agents/<agent_id>/portals', methods=['GET'])
+def api_list_portals(agent_id):
+    """List all portals for an agent."""
+    agent = db.get_agent(agent_id)
+    if not agent:
+        return jsonify({'error': 'Agent not found'}), 404
+    portals = db.get_agent_portals(agent_id)
+    # Parse backend_config from JSON strings
+    for p in portals:
+        cfg = p.get('backend_config', '{}')
+        if isinstance(cfg, str):
+            try:
+                p['backend_config'] = json.loads(cfg)
+            except (json.JSONDecodeError, TypeError):
+                p['backend_config'] = {}
+    return jsonify({'portals': portals})
+
+
+@agents_bp.route('/api/agents/<agent_id>/portals', methods=['POST'])
+def api_create_portal(agent_id):
+    """Create a new portal for an agent."""
+    agent = db.get_agent(agent_id)
+    if not agent:
+        return jsonify({'error': 'Agent not found'}), 404
+
+    data = request.get_json() or {}
+    name = (data.get('name') or '').strip()
+    virtual_path = (data.get('virtual_path') or '').strip()
+    backend_type = (data.get('backend_type') or '').strip()
+    real_path = (data.get('real_path') or '').strip()
+
+    if not name:
+        return jsonify({'error': 'name is required'}), 400
+    if not virtual_path:
+        return jsonify({'error': 'virtual_path is required'}), 400
+    if backend_type not in ('local', 'ssh', 'evonet'):
+        return jsonify({'error': 'backend_type must be local, ssh, or evonet'}), 400
+    if not real_path:
+        return jsonify({'error': 'real_path is required'}), 400
+
+    backend_config = data.get('backend_config', {})
+    if isinstance(backend_config, str):
+        try:
+            backend_config = json.loads(backend_config)
+        except (json.JSONDecodeError, ValueError):
+            return jsonify({'error': 'backend_config must be valid JSON'}), 400
+
+    portal_data = {
+        'agent_id': agent_id,
+        'name': name,
+        'virtual_path': virtual_path,
+        'backend_type': backend_type,
+        'backend_config': backend_config,
+        'real_path': real_path,
+    }
+    portal_id = db.create_portal(portal_data)
+
+    # Invalidate portal cache for this agent
+    from backend.tools._portal import invalidate_portal_cache
+    invalidate_portal_cache(agent_id)
+
+    portal = db.get_portal(portal_id)
+    cfg = portal.get('backend_config', '{}')
+    if isinstance(cfg, str):
+        try:
+            portal['backend_config'] = json.loads(cfg)
+        except (json.JSONDecodeError, TypeError):
+            portal['backend_config'] = {}
+    return jsonify(portal), 201
+
+
+@agents_bp.route('/api/portals/<portal_id>', methods=['PUT'])
+def api_update_portal(portal_id):
+    """Update a portal's configuration."""
+    portal = db.get_portal(portal_id)
+    if not portal:
+        return jsonify({'error': 'Portal not found'}), 404
+
+    data = request.get_json() or {}
+    updates = {}
+    if 'name' in data:
+        updates['name'] = (data['name'] or '').strip()
+    if 'virtual_path' in data:
+        updates['virtual_path'] = (data['virtual_path'] or '').strip()
+    if 'backend_type' in data:
+        btype = (data['backend_type'] or '').strip()
+        if btype not in ('local', 'ssh', 'evonet'):
+            return jsonify({'error': 'backend_type must be local, ssh, or evonet'}), 400
+        updates['backend_type'] = btype
+    if 'real_path' in data:
+        updates['real_path'] = (data['real_path'] or '').strip()
+    if 'backend_config' in data:
+        cfg = data['backend_config']
+        if isinstance(cfg, str):
+            try:
+                cfg = json.loads(cfg)
+            except (json.JSONDecodeError, ValueError):
+                return jsonify({'error': 'backend_config must be valid JSON'}), 400
+        updates['backend_config'] = json.dumps(cfg)
+
+    if updates:
+        db.update_portal(portal_id, updates)
+
+    # Invalidate portal cache for the portal's agent
+    from backend.tools._portal import invalidate_portal_cache
+    invalidate_portal_cache(portal['agent_id'])
+
+    portal = db.get_portal(portal_id)
+    cfg = portal.get('backend_config', '{}')
+    if isinstance(cfg, str):
+        try:
+            portal['backend_config'] = json.loads(cfg)
+        except (json.JSONDecodeError, TypeError):
+            portal['backend_config'] = {}
+    return jsonify(portal)
+
+
+@agents_bp.route('/api/portals/<portal_id>', methods=['DELETE'])
+def api_delete_portal(portal_id):
+    """Delete a portal and disconnect its backend."""
+    portal = db.get_portal(portal_id)
+    if not portal:
+        return jsonify({'error': 'Portal not found'}), 404
+
+    # Disconnect backend if active
+    try:
+        from backend.portals import portal_manager
+        portal_manager.disconnect(portal_id)
+    except Exception:
+        pass
+
+    db.delete_portal(portal_id)
+
+    # Invalidate portal cache
+    from backend.tools._portal import invalidate_portal_cache
+    invalidate_portal_cache(portal['agent_id'])
+
+    return jsonify({'ok': True})
+
+
+@agents_bp.route('/api/portals/<portal_id>/connect', methods=['POST'])
+def api_portal_connect(portal_id):
+    """Test connection for a portal — creates the backend if not already active."""
+    portal = db.get_portal(portal_id)
+    if not portal:
+        return jsonify({'error': 'Portal not found'}), 404
+
+    # Parse backend_config to dict
+    cfg = portal.get('backend_config', '{}')
+    if isinstance(cfg, str):
+        try:
+            portal['backend_config'] = json.loads(cfg)
+        except (json.JSONDecodeError, TypeError):
+            portal['backend_config'] = {}
+
+    try:
+        from backend.portals import portal_manager
+        backend = portal_manager.get_backend(portal)
+        s = backend.status()
+        db.update_portal_status(portal_id, 'connected')
+        return jsonify({'ok': True, 'status': 'connected', 'backend': s})
+    except Exception as e:
+        db.update_portal_status(portal_id, 'disconnected', str(e))
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@agents_bp.route('/api/portals/<portal_id>/disconnect', methods=['POST'])
+def api_portal_disconnect(portal_id):
+    """Disconnect a portal's backend."""
+    portal = db.get_portal(portal_id)
+    if not portal:
+        return jsonify({'error': 'Portal not found'}), 404
+
+    try:
+        from backend.portals import portal_manager
+        result = portal_manager.disconnect(portal_id)
+        db.update_portal_status(portal_id, 'disconnected')
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500

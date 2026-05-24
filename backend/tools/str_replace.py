@@ -8,7 +8,12 @@ except ImportError:
     _WORKSPACE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from backend.tools._workspace import resolve_workspace_path
-
+try:
+    from backend.tools.lib.safety_pipeline import should_skip_safety
+except ImportError:
+    import logging
+    logging.getLogger(__name__).warning("safety_pipeline unavailable — safety checks disabled for str_replace tool")
+    should_skip_safety = lambda agent: True
 
 def str_replace(file_path: str, old_str: str, new_str: str, count: int = 1) -> dict:
     """
@@ -95,14 +100,14 @@ def execute(agent, args: dict) -> dict:
     count = args.get('count', 1)
 
     # Heuristic safety check: block access to .ssh directory
-    if agent is None or agent.get("safety_checker_enabled", 1):
+    if not should_skip_safety(agent) and (agent is None or agent.get("safety_checker_enabled", 1)):
         from backend.tools.safety_checker import check_ssh_path
         ssh_check = check_ssh_path(file_path, agent)
         if ssh_check["blocked"]:
             return {"error": ssh_check["error"]}
 
     # Heuristic safety check: require approval for sensitive system paths
-    if not (agent or {}).get('is_super') and (agent is None or agent.get("safety_checker_enabled", 1)):
+    if not should_skip_safety(agent) and not (agent or {}).get('is_super') and (agent is None or agent.get("safety_checker_enabled", 1)):
         from backend.tools.safety_checker import check_sensitive_path
         path_check = check_sensitive_path(file_path, agent)
         if path_check["blocked"]:
@@ -113,6 +118,23 @@ def execute(agent, args: dict) -> dict:
                 "approval_info": {
                     "risk_level": "medium",
                     "description": "Modifying sensitive system paths may compromise system integrity.",
+                    "file_path": file_path,
+                },
+            }
+
+    # Heuristic safety check: require approval for .env files
+    if not should_skip_safety(agent) and not (agent or {}).get('is_super') and (agent is None or agent.get("safety_checker_enabled", 1)):
+        from backend.tools.safety_checker import check_env_path
+        env_check = check_env_path(file_path, agent)
+        if env_check["blocked"]:
+            return {
+                "error": env_check["error"],
+                "level": "requires_approval",
+                "reasons": [env_check["reason"]],
+                "approval_info": {
+                    "risk_level": "high",
+                    "description": "Modifying environment files may expose or corrupt secrets, API keys, or passwords.",
+                    "file_path": file_path,
                 },
             }
 
@@ -131,6 +153,10 @@ def execute(agent, args: dict) -> dict:
     if not old_str:
         return {'error': "'old_str' must not be empty"}
 
+    # Normalise smart quotes in replacement content before applying
+    from backend.normalizer import normalize_code_quotes
+    new_str = normalize_code_quotes(new_str)
+
     # /_self/ path: always route to the agent's local directory on the evonic server.
     from backend.tools._workspace import is_self_path, resolve_self_path
     agent_id = (agent or {}).get('id')
@@ -142,6 +168,49 @@ def execute(agent, args: dict) -> dict:
         if 'error' in result and display_path != local_path:
             result['error'] = result['error'].replace(local_path, display_path)
         return result
+
+    # /_portal/ path: route through a virtual path mapping to local/SSH/evonet.
+    from backend.tools._portal import is_portal_path, resolve_portal_path
+    if agent_id and is_portal_path(file_path):
+        backend, real_path = resolve_portal_path(agent_id, file_path)
+        if backend is None:
+            return {'error': real_path}  # error message
+
+        if not backend.file_exists(real_path):
+            return {'error': f"File not found: {display_path}"}
+
+        read_result = backend.read_file(real_path)
+        if 'error' in read_result:
+            return {'error': read_result['error']}
+
+        content = read_result['content']
+        occurrences = content.count(old_str)
+
+        if occurrences == 0:
+            return {
+                'error': (
+                    f"'old_str' not found in {display_path}. "
+                    "Action: call read_file() to get the current file content "
+                    "and copy the exact text you want to replace."
+                )
+            }
+
+        if occurrences != count:
+            return {
+                'error': (
+                    f"'old_str' found {occurrences} time(s) in {display_path}, "
+                    f"but count={count}. "
+                    "Make 'old_str' more specific by including more surrounding context, "
+                    f"or set count={occurrences} if you intend to replace all occurrences."
+                )
+            }
+
+        new_content = content.replace(old_str, new_str, count)
+        wr = backend.write_file(real_path, new_content)
+        if 'error' in wr:
+            return {'error': wr['error']}
+
+        return {'result': 'success', 'replacements': count}
 
     # When sandbox is enabled, route file I/O through the execution backend.
     sandbox_enabled = (agent or {}).get('sandbox_enabled', 1)

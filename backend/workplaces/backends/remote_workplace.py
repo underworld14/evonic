@@ -16,6 +16,7 @@ Config keys expected in workplace.config:
   workspace_path  — remote working directory (optional, used as cwd)
 """
 
+import os
 import base64
 import shlex
 
@@ -25,15 +26,17 @@ from backend.tools.lib.exec_backend import ExecutionBackend, file_stat_code, par
 class RemoteWorkplaceBackend(ExecutionBackend):
     """Executes commands on a remote server via SSH, auto-connecting from workplace config."""
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, workplace_id: str = ''):
         self._config = config
         self._workspace = config.get('workspace_path')
+        self._workplace_id = workplace_id
         self._ssh = None
         self._connect()
 
     def _connect(self):
         from backend.tools.lib.backends.ssh_backend import SSHBackend
         cfg = self._config
+        ssh_session_id = f'workplace:{self._workplace_id}' if self._workplace_id else ''
         self._ssh = SSHBackend(
             host=cfg['host'],
             username=cfg['username'],
@@ -41,6 +44,7 @@ class RemoteWorkplaceBackend(ExecutionBackend):
             password=cfg.get('password') if cfg.get('auth_type') == 'password' else None,
             key_path=cfg.get('key_path') if cfg.get('auth_type') != 'password' else None,
             passphrase=cfg.get('passphrase'),
+            session_id=ssh_session_id,
         )
 
     def _cwd_prefix(self) -> str:
@@ -54,14 +58,19 @@ class RemoteWorkplaceBackend(ExecutionBackend):
         return self._ssh.run_bash(prefixed, timeout, env)
 
     def run_python(self, code: str, timeout: int, env: dict) -> dict:
-        # Python scripts run from workspace_path via bash -c wrapper
+        # Ensure evonic helpers are available on the remote (lazy upload on first call)
+        self._ssh._ensure_evonic_on_remote()
+        remote_evonic = os.path.expanduser('~/.evonic/evonic')
         if self._workspace:
-            escaped = self._workspace.replace("'", "'\\\\''")
-            wrapped = f"cd '{escaped}' && python3 -"
+            escaped = self._workspace.replace("'", "'\\''")
             # SSHBackend's run_python pipes code to python3, but we need bash wrapping;
             # call run_bash with explicit python3 inline execution
-            env_exports = ' '.join(f'{k}={v!r}' for k, v in (env or {}).items())
-            bash_script = f"{'export ' + env_exports + ' && ' if env_exports else ''}cd '{escaped}' && python3 - <<'__PYEOF__'\n{code}\n__PYEOF__"
+            merged = dict(env or {})
+            merged['PYTHONPATH'] = f"{remote_evonic}:{merged.get('PYTHONPATH', '')}".rstrip(':')
+            env_exports = ' '.join(f'{k}={v!r}' for k, v in merged.items())
+            bash_script = f"""{'export ' + env_exports + ' && ' if env_exports else ''}cd '{escaped}' && python3 - <<'__PYEOF__'
+{code}
+__PYEOF__"""
             return self._ssh.run_bash(bash_script, timeout, {})
         return self._ssh.run_python(code, timeout, env)
 

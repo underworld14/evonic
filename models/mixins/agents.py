@@ -26,8 +26,9 @@ class AgentMixin:
             cursor.execute("""
                 INSERT INTO agents (id, name, description, system_prompt, model, is_super, enabled,
                     vision_enabled, inject_agent_id, inject_datetime, send_intermediate_responses, enable_agent_state,
-                    workspace, agent_messaging_enabled, sandbox_enabled, summarize_tail)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    workspace, agent_messaging_enabled, sandbox_enabled, summarize_tail, artifacts_enabled,
+                    fallback_model_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 agent['id'], agent.get('name', agent['id']),
                 agent.get('description', ''), agent.get('system_prompt', ''),
@@ -43,6 +44,8 @@ class AgentMixin:
                 1 if agent.get('agent_messaging_enabled') is not False else 0,
                 1 if agent.get('sandbox_enabled') else 0,
                 agent.get('summarize_tail', 5),
+                1 if agent.get('artifacts_enabled') is not False else 0,
+                agent.get('fallback_model_id'),
             ))
             conn.commit()
         return agent['id']
@@ -54,7 +57,9 @@ class AgentMixin:
                    'send_intermediate_responses', 'outbound_buffer_seconds', 'enable_agent_state', 'workspace',
                    'enabled', 'is_super', 'sandbox_enabled', 'safety_checker_enabled', 'primary_channel_id',
                    'avatar_path', 'disable_parallel_tool_execution', 'disable_turn_prefetch',
-                   'agent_messaging_enabled', 'workplace_id'}
+                   'agent_messaging_enabled', 'workplace_id',
+                   'attachments_enabled', 'attachment_max_size_mb', 'artifacts_enabled',
+                   'fallback_model_id'}
         updates = {k: v for k, v in data.items() if k in allowed}
         if not updates:
             return False
@@ -164,6 +169,24 @@ class AgentMixin:
     def clear_all_agent_tools(self):
         with self._connect() as conn:
             conn.execute("DELETE FROM agent_tools")
+            conn.commit()
+
+    def add_agent_tool(self, agent_id: str, tool_id: str):
+        """Add a single tool to an agent (idempotent)."""
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO agent_tools (agent_id, tool_id) VALUES (?, ?)",
+                (agent_id, tool_id)
+            )
+            conn.commit()
+
+    def remove_agent_tool(self, agent_id: str, tool_id: str):
+        """Remove a single tool from an agent."""
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM agent_tools WHERE agent_id = ? AND tool_id = ?",
+                (agent_id, tool_id)
+            )
             conn.commit()
 
     # ==================== Agent Skills ====================

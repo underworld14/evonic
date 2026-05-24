@@ -1,0 +1,167 @@
+[
+  {
+    "function": {
+      "name": "lookup_user",
+      "description": "Look up a user by ID, name, or search query. Returns matching user records with profile info.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string", "description": "Search by name or user ID"},
+          "user_id": {"type": "string", "description": "Exact user ID to look up"}
+        }
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "name": "get_user_summary",
+      "description": "Get a comprehensive summary of a user including their contacts, tags, groups, linked agents, and access control info for the calling agent.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "user_id": {"type": "string", "description": "The user ID to summarize"}
+        },
+        "required": ["user_id"]
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "name": "list_users",
+      "description": "List all users with pagination and optional filtering by tag or group.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string", "description": "Optional search query (name or notes)"},
+          "tags": {"type": "string", "description": "Comma-separated tag filter"},
+          "group_id": {"type": "string", "description": "Filter by group ID"},
+          "limit": {"type": "integer", "description": "Max results (default 20, max 100)"},
+          "offset": {"type": "integer", "description": "Offset for pagination"}
+        }
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "name": "add_user_contact",
+      "description": "Add a contact (phone, email, Telegram ID, etc.) to an existing user.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "user_id": {"type": "string", "description": "User ID to add contact to"},
+          "channel_type": {"type": "string", "description": "Channel type (whatsapp, telegram, email, etc.)"},
+          "external_user_id": {"type": "string", "description": "The external ID on that channel"},
+          "value": {"type": "string", "description": "Display value for the contact"}
+        },
+        "required": ["user_id", "channel_type", "external_user_id"]
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "name": "manage_user_tags",
+      "description": "Add or remove tags on a user. Tags control access: 'public' allows all agents, 'agent:X' allows only agent X, 'restricted' limits to group-only.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "user_id": {"type": "string", "description": "User ID"},
+          "action": {"type": "string", "enum": ["add", "remove"], "description": "Add or remove tag"},
+          "tag": {"type": "string", "description": "Tag name (e.g. 'public', 'restricted', 'agent:my-agent', 'vip')"}
+        },
+        "required": ["user_id", "action", "tag"]
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "name": "list_groups",
+      "description": "List all available groups and their member counts.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "name": "create_group",
+      "description": "Create a new group for organizing users and agents.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string", "description": "Group display name"},
+          "description": {"type": "string", "description": "Optional group description"}
+        },
+        "required": ["name"]
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "name": "manage_user_groups",
+      "description": "Add or remove a user from a group. Only works if the calling agent can manage users.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "user_id": {"type": "string", "description": "User ID"},
+          "group_id": {"type": "string", "description": "Group ID"},
+          "action": {"type": "string", "enum": ["add", "remove"], "description": "Add or remove user from group"}
+        },
+        "required": ["user_id", "group_id", "action"]
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "name": "get_access_control_info",
+      "description": "Get detailed access control info explaining why an agent can or cannot communicate with a user.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "user_id": {"type": "string", "description": "The user ID to check access for"}
+        },
+        "required": ["user_id"]
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "name": "block_user",
+      "description": "Block or unblock a user (admin only). Blocked users cannot receive messages from any agent.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "user_id": {"type": "string", "description": "User ID to block/unblock"},
+          "blocked": {"type": "boolean", "description": "True to block, False to unblock"},
+          "reason": {"type": "string", "description": "Reason for blocking (required when blocking)"}
+        },
+        "required": ["user_id", "blocked"]
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "name": "merge_users",
+      "description": "Merge one user record into another (admin only). Source user contacts/tags/groups are reassigned to target.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "source_id": {"type": "string", "description": "User ID to merge FROM (will be soft-deleted)"},
+          "target_id": {"type": "string", "description": "User ID to merge INTO (target keeps all data)"}
+        },
+        "required": ["source_id", "target_id"]
+      }
+    },
+    "type": "function"
+  }
+]

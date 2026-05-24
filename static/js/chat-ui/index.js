@@ -81,18 +81,28 @@ export class ChatUI {
      * @returns {jQuery}  the wrapper div (anchor for Turn)
      */
     appendMessage(role, content, opts = {}) {
-        if (role !== 'error' && (!content || !content.trim())) return $();
+        if (role !== 'error' && (!content || !content.trim())) {
+            this._log.warn('appendMessage SKIPPED empty/whitespace content', role);
+            return $();
+        }
 
         // Remove empty-state placeholder
         this.$container.find('[data-empty-state]').remove();
 
         // For assistant with timeline metadata, render a finalized thinking bubble first
         if (role === 'assistant' && opts.metadata && opts.metadata.timeline && opts.metadata.timeline.length > 0) {
+            this._log.info('appendMessage rendering finalized bubble for assistant, timeline_len=', opts.metadata.timeline.length);
             this._renderFinalizedBubble(opts.metadata.timeline, opts.metadata.thinking_duration);
         }
 
         const $wrapper = this._renderers.buildMessageBubble(role, content, opts, this._cfg);
+        if (!$wrapper || !$wrapper.length) {
+            this._log.warn('appendMessage buildMessageBubble returned empty', role);
+            return $();
+        }
         this.$container.append($wrapper);
+        const totalKids = this.$container.children().length;
+        this._log.info('appendMessage appended', role, 'totalChildren=', totalKids, 'contentPreview=', String(content||'').slice(0,60));
         this._smartScroll();
         return $wrapper;
     }
@@ -143,7 +153,7 @@ export class ChatUI {
                 // agent-state bridge: fire document-level event for tool:executed
                 if (evtName === 'tool:executed') {
                     const toolName = data && data.tool;
-                    if (['save_plan', 'set_mode', 'update_tasks', 'state'].includes(toolName)) {
+                    if (['save_plan', 'set_mode', 'update_tasks', 'state', 'use_skill', 'unload_skill'].includes(toolName)) {
                         document.dispatchEvent(new CustomEvent('evonic:agent-state-changed', { detail: data }));
                     }
                 }
@@ -442,6 +452,9 @@ export class ChatUI {
                     const newTurn = this.beginTurn($anchor);
                     this._lastLiveTurnId = newTurn.id;
                     this.markQueuedAsDelivered();
+                    // Re-route the SSE adapter to the new turn so subsequent events
+                    // are not silently dropped by the finalized old turn's ingest guard.
+                    adapter._handler = (evt) => newTurn.ingest(evt);
                     opts.onSplit(newTurn);
                 }
             };

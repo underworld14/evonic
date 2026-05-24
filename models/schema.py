@@ -363,11 +363,19 @@ class SchemaMixin:
                 ("enabled", "BOOLEAN DEFAULT 1"),
                 ("default_model_id", "TEXT"),
                 ("sandbox_enabled", "BOOLEAN DEFAULT 0"),
+                ("attachments_enabled", "BOOLEAN DEFAULT 0"),
+                ("attachment_max_size_mb", "INTEGER DEFAULT 20"),
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE agents ADD COLUMN {col} {defn}")
                 except sqlite3.OperationalError:
                     pass
+
+            # Migration: add artifacts_enabled (default ON for all agents)
+            try:
+                cursor.execute("ALTER TABLE agents ADD COLUMN artifacts_enabled BOOLEAN DEFAULT 1")
+            except sqlite3.OperationalError:
+                pass
 
             # Migration: add last_active_at to track most recently chatted agent
             try:
@@ -418,6 +426,20 @@ class SchemaMixin:
                 cursor.execute("ALTER TABLE agents ADD COLUMN session_count INTEGER DEFAULT 0")
             except sqlite3.OperationalError:
                 pass
+
+            # Migration: add fallback_model_id for per-agent model fallback
+            try:
+                cursor.execute("ALTER TABLE agents ADD COLUMN fallback_model_id TEXT")
+            except sqlite3.OperationalError:
+                pass
+
+            # Migration: add tool_compression_enabled for per-agent RTK toggle
+            try:
+                cursor.execute("ALTER TABLE agents ADD COLUMN tool_compression_enabled BOOLEAN DEFAULT 1")
+            except sqlite3.OperationalError:
+                pass
+            # Backfill existing agents: NULL -> 1 (compression enabled by default)
+            cursor.execute("UPDATE agents SET tool_compression_enabled = 1 WHERE tool_compression_enabled IS NULL")
 
             # Migration: enable inject_agent_id and inject_datetime for all existing agents
             cursor.execute("UPDATE agents SET inject_agent_id = 1 WHERE inject_agent_id = 0 OR inject_agent_id IS NULL")
@@ -579,6 +601,36 @@ class SchemaMixin:
             except sqlite3.OperationalError:
                 pass
 
+            # Migration: add attachments_supported column to llm_models if missing
+            try:
+                cursor.execute("ALTER TABLE llm_models ADD COLUMN attachments_supported BOOLEAN DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+
+            # ==================== Attachments Table ====================
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS attachments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    external_user_id TEXT,
+                    channel_id TEXT,
+                    channel_type TEXT,
+                    filename TEXT NOT NULL,
+                    original_filename TEXT,
+                    mime_type TEXT,
+                    file_type TEXT,
+                    size_bytes INTEGER,
+                    file_path TEXT NOT NULL,
+                    telegram_file_id TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_attachments_session ON attachments(session_id, agent_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_attachments_created ON attachments(created_at)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_attachments_agent ON attachments(agent_id)")
+
             # Create indexes for faster queries
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_tests_domain ON tests(domain_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_tests_level ON tests(domain_id, level)")
@@ -600,7 +652,7 @@ class SchemaMixin:
             except sqlite3.OperationalError:
                 pass
             try:
-                cursor.execute("ALTER TABLE cloud_connectors RENAME COLUMN home_id TO workplace_id")
+                cursor.execute("ALTER TABLE tunnel_connectors RENAME COLUMN home_id TO workplace_id")
             except sqlite3.OperationalError:
                 pass
             try:
@@ -613,7 +665,7 @@ class SchemaMixin:
                 CREATE TABLE IF NOT EXISTS workplaces (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
-                    type TEXT NOT NULL CHECK(type IN ('local', 'remote', 'cloud')),
+                    type TEXT NOT NULL CHECK(type IN ('local', 'remote', 'tunnel')),
                     config TEXT NOT NULL DEFAULT '{}',
                     status TEXT DEFAULT 'disconnected',
                     error_msg TEXT,
@@ -623,9 +675,45 @@ class SchemaMixin:
                 )
             """)
 
-            # Cloud connectors table (Evonet program pairing records)
+
+            # Migration: rename type cloud to tunnel for existing workplaces
+            # If the old CHECK constraint (type IN 'cloud') is still on the table,
+            # the UPDATE will fail with IntegrityError. Recreate the table with the new schema.
+            try:
+                cursor.execute("UPDATE workplaces SET type = 'tunnel' WHERE type = 'cloud'")
+            except (sqlite3.OperationalError, sqlite3.IntegrityError):
+                try:
+                    cursor.execute("ALTER TABLE workplaces RENAME TO workplaces_old")
+                    cursor.execute("""
+                        CREATE TABLE workplaces (
+                            id TEXT PRIMARY KEY,
+                            name TEXT NOT NULL,
+                            type TEXT NOT NULL CHECK(type IN ('local', 'remote', 'tunnel')),
+                            config TEXT NOT NULL DEFAULT '{}',
+                            status TEXT DEFAULT 'disconnected',
+                            error_msg TEXT,
+                            last_connected_at TEXT,
+                            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+                    cursor.execute("""
+                        INSERT INTO workplaces (id, name, type, config, status, error_msg, last_connected_at, created_at, updated_at)
+                        SELECT id, name, CASE WHEN type = 'cloud' THEN 'tunnel' ELSE type END, config, status, error_msg, last_connected_at, created_at, updated_at
+                        FROM workplaces_old
+                    """)
+                    cursor.execute("DROP TABLE workplaces_old")
+                except sqlite3.OperationalError:
+                    pass
+
+            # Migration: rename cloud_connectors to tunnel_connectors for existing databases
+            try:
+                cursor.execute("ALTER TABLE cloud_connectors RENAME TO tunnel_connectors")
+            except sqlite3.OperationalError:
+                pass
+            # Tunnel connectors table (Evonet program pairing records)
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS cloud_connectors (
+                CREATE TABLE IF NOT EXISTS tunnel_connectors (
                     id TEXT PRIMARY KEY,
                     workplace_id TEXT NOT NULL REFERENCES workplaces(id) ON DELETE CASCADE,
                     connector_token TEXT UNIQUE,
@@ -646,12 +734,12 @@ class SchemaMixin:
 
             # Migration: relax connector_token NOT NULL so NULL is allowed before pairing completes
             try:
-                col_info = cursor.execute("PRAGMA table_info(cloud_connectors)").fetchall()
+                col_info = cursor.execute("PRAGMA table_info(tunnel_connectors)").fetchall()
                 token_col = next((c for c in col_info if c[1] == 'connector_token'), None)
                 if token_col and token_col[3] == 1:  # notnull == 1
-                    cursor.execute("ALTER TABLE cloud_connectors RENAME TO cloud_connectors_old")
+                    cursor.execute("ALTER TABLE tunnel_connectors RENAME TO tunnel_connectors_old")
                     cursor.execute("""
-                        CREATE TABLE cloud_connectors (
+                        CREATE TABLE tunnel_connectors (
                             id TEXT PRIMARY KEY,
                             workplace_id TEXT NOT NULL REFERENCES workplaces(id) ON DELETE CASCADE,
                             connector_token TEXT UNIQUE,
@@ -664,20 +752,65 @@ class SchemaMixin:
                         )
                     """)
                     cursor.execute("""
-                        INSERT INTO cloud_connectors
+                        INSERT INTO tunnel_connectors
                         SELECT id, workplace_id,
                                CASE WHEN connector_token = '' THEN NULL ELSE connector_token END,
                                pairing_code, pairing_expires_at, device_name, platform, version, last_seen_at
-                        FROM cloud_connectors_old
+                        FROM tunnel_connectors_old
                     """)
-                    cursor.execute("DROP TABLE cloud_connectors_old")
+                    cursor.execute("DROP TABLE tunnel_connectors_old")
             except sqlite3.OperationalError:
                 pass
 
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_workplaces_type ON workplaces(type)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_cloud_connectors_workplace ON cloud_connectors(workplace_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_cloud_connectors_token ON cloud_connectors(connector_token)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_tunnel_connectors_workplace ON tunnel_connectors(workplace_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_tunnel_connectors_token ON tunnel_connectors(connector_token)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_agents_workplace ON agents(workplace_id)")
+
+            # ==================== Portals Table ====================
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS portals (
+                    id TEXT PRIMARY KEY,
+                    agent_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    virtual_path TEXT NOT NULL,
+                    backend_type TEXT NOT NULL CHECK(backend_type IN ('local', 'ssh', 'evonet')),
+                    backend_config TEXT NOT NULL DEFAULT '{}',
+                    real_path TEXT NOT NULL,
+                    status TEXT DEFAULT 'disconnected',
+                    error_msg TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+                )
+            """)
+
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_portals_agent ON portals(agent_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_portals_backend_type ON portals(backend_type)")
+
+            # ==================== Transfer Jobs Table ====================
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS transfer_jobs (
+                    id TEXT PRIMARY KEY,
+                    agent_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    source_path TEXT NOT NULL,
+                    dest_path TEXT NOT NULL,
+                    source_backend_type TEXT NOT NULL,
+                    dest_backend_type TEXT NOT NULL,
+                    status TEXT DEFAULT 'pending' CHECK(status IN ('pending','running','completed','failed','cancelled')),
+                    total_bytes INTEGER DEFAULT 0,
+                    bytes_transferred INTEGER DEFAULT 0,
+                    error_msg TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TIMESTAMP,
+                    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+                )
+            """)
+
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_transfer_jobs_agent ON transfer_jobs(agent_id)")
 
             # ==================== HMADS Safety Rules Table ====================
 

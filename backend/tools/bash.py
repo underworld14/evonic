@@ -9,7 +9,16 @@ The backend is resolved per-session from the backend registry:
 New backends (E2B, etc.) plug in without changing this file.
 """
 
+import logging
+
 from backend.tools.lib.exec_backend import registry, validate_env_keys
+
+try:
+    from backend.tools.lib.safety_pipeline import get_safety_pipeline, should_skip_safety
+except ImportError:
+    logging.getLogger(__name__).warning("safety_pipeline unavailable — safety checks disabled for bash tool")
+    get_safety_pipeline = None
+    should_skip_safety = lambda agent: True
 
 
 def execute(agent: dict, args: dict) -> dict:
@@ -32,12 +41,28 @@ def execute(agent: dict, args: dict) -> dict:
         return {'error': "Missing required argument: 'script'"}
 
     # ------------------------------------------------------------------
+    # Long-running command guard (detect build commands, suggest tmux/screen)
+    # ------------------------------------------------------------------
+    from backend.tools.lib.long_running_guard import check_long_running
+
+    lr = check_long_running(script)
+    if lr:
+        return {
+            'error': (
+                f"BLOCKED: Long-running command detected ({lr['matched_command']}). "
+                f"Do NOT retry the command directly — it will be blocked again.\n\n"
+                f"REQUIRED: Copy and execute this exact script as your next bash call:\n"
+                f"```\n{lr['run_script']}\n```\n\n"
+                f"After it starts, monitor with: {lr['monitor_script']}\n"
+                f"Check completion with: {lr['check_status_script']}\n"
+                f"Check exit code with: {lr['check_exit_code_script']}"
+            ),
+        }
+
+    # ------------------------------------------------------------------
     # HMADS safety check (pipeline: system rules + custom user rules)
     # ------------------------------------------------------------------
-    from backend.tools.lib.safety_pipeline import get_safety_pipeline
-
-    if not agent.get('_skip_safety') and agent.get('safety_checker_enabled', 1) and not agent.get('is_super'):
-        safety = get_safety_pipeline().check(script, tool_type='bash', agent_context=agent)
+    if get_safety_pipeline is not None and not should_skip_safety(agent) and agent.get('safety_checker_enabled', 1) and not agent.get('is_super'):        safety = get_safety_pipeline().check(script, tool_type='bash', agent_context=agent)
     else:
         safety = {'level': 'safe', 'score': 0, 'reasons': [], 'blocked_patterns': [], 'approval_info': {}}
 

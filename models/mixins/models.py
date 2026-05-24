@@ -13,6 +13,14 @@ class ModelsMixin:
             cursor.execute("SELECT * FROM llm_models ORDER BY name")
             return [dict(row) for row in cursor.fetchall()]
 
+    def get_enabled_llm_models(self) -> List[Dict[str, Any]]:
+        """Return list of only enabled model configs (enabled=1)."""
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM llm_models WHERE enabled = 1 ORDER BY name")
+            return [dict(row) for row in cursor.fetchall()]
+
     def save_llm_models(self, models_list: List[Dict[str, Any]]) -> None:
         """Persist models to llm_models table."""
         with self._connect() as conn:
@@ -23,8 +31,9 @@ class ModelsMixin:
                 cursor.execute("""
                     INSERT INTO llm_models (id, name, type, provider, base_url, api_key,
                         model_name, max_tokens, timeout, thinking, thinking_budget,
-                        temperature, enabled, is_default, model_max_concurrent, api_format)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        temperature, enabled, is_default, model_max_concurrent, api_format,
+                        vision_supported, attachments_supported)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     m.get('id'),
                     m.get('name'),
@@ -42,6 +51,8 @@ class ModelsMixin:
                     m.get('is_default', 0),
                     m.get('model_max_concurrent', 1),
                     m.get('api_format', 'openai'),
+                    m.get('vision_supported', 0),
+                    m.get('attachments_supported', 0),
                 ))
             conn.commit()
 
@@ -106,6 +117,40 @@ class ModelsMixin:
             conn.commit()
             return cursor.rowcount > 0
 
+    def get_agent_fallback_model(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        """Return agent's fallback model or None.
+
+        Unlike get_agent_default_model, there is no global fallback —
+        if the agent has no fallback configured, returns None.
+        """
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT fallback_model_id FROM agents WHERE id = ?", (agent_id,))
+            row = cursor.fetchone()
+            if row and row["fallback_model_id"]:
+                cursor.execute("SELECT * FROM llm_models WHERE id = ?", (row["fallback_model_id"],))
+                model_row = cursor.fetchone()
+                if model_row:
+                    return dict(model_row)
+            return None
+
+    def set_agent_fallback_model(self, agent_id: str, model_id: Optional[str]) -> bool:
+        """Set agent's fallback model. model_id can be None to clear."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            if model_id:
+                # Verify model exists
+                cursor.execute("SELECT 1 FROM llm_models WHERE id = ?", (model_id,))
+                if not cursor.fetchone():
+                    return False
+            cursor.execute(
+                "UPDATE agents SET fallback_model_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (model_id, agent_id)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
     def create_model(self, model_data: Dict[str, Any]) -> str:
         """Create a new model. Returns model ID."""
         import uuid
@@ -115,8 +160,9 @@ class ModelsMixin:
             cursor.execute("""
                 INSERT INTO llm_models (id, name, type, provider, base_url, api_key,
                     model_name, max_tokens, timeout, thinking, thinking_budget,
-                    temperature, enabled, is_default, model_max_concurrent, api_format)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    temperature, enabled, is_default, model_max_concurrent, api_format,
+                    vision_supported, attachments_supported)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 model_id,
                 model_data.get('name'),
@@ -134,6 +180,8 @@ class ModelsMixin:
                 model_data.get('is_default', 0),
                 model_data.get('model_max_concurrent', 1),
                 model_data.get('api_format', 'openai'),
+                model_data.get('vision_supported', 0),
+                model_data.get('attachments_supported', 0),
             ))
             conn.commit()
         return model_id
@@ -142,7 +190,7 @@ class ModelsMixin:
         """Update an existing model."""
         allowed = {'name', 'type', 'provider', 'base_url', 'api_key', 'model_name',
                    'max_tokens', 'timeout', 'thinking', 'thinking_budget', 'temperature', 'enabled', 'is_default',
-                   'model_max_concurrent', 'api_format'}
+                   'model_max_concurrent', 'api_format', 'vision_supported', 'attachments_supported'}
         updates = {k: v for k, v in model_data.items() if k in allowed}
         if not updates:
             return False

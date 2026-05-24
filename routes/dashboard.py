@@ -13,7 +13,7 @@ from backend.plugin_manager import plugin_manager
 from backend.skills_manager import skills_manager
 from backend.skillsets import list_skillsets
 from backend.setup import (run_setup, test_connection, PROVIDER_DEFAULTS,
-                            TONE_PRESETS, LANGUAGE_PRESETS, check_docker_available)
+                            LANGUAGE_PRESETS, check_docker_available)
 import config
 
 # `resource` is a POSIX-only stdlib module — absent on Windows.
@@ -37,7 +37,6 @@ def setup_page():
         return redirect('/')
     return render_template('setup.html',
                            providers=PROVIDER_DEFAULTS,
-                           tones=TONE_PRESETS,
                            languages=LANGUAGE_PRESETS)
 
 
@@ -61,8 +60,6 @@ def api_setup():
             api_key=(data.get('api_key') or '').strip(),
             agent_name=data.get('agent_name', '').strip(),
             agent_id=data.get('agent_id', '').strip() or None,
-            tone=data.get('tone', 'professional'),
-            custom_tone_text=data.get('custom_tone_text', ''),
             description=data.get('description', ''),
             language=data.get('language', 'english'),
             sandbox_enabled=sandbox_enabled,
@@ -128,7 +125,13 @@ def api_setup():
         _write_system_prompt(agent_id, system_prompt)
         db.set_setting('super_agent_id', agent_id)
         db.set_setting('sandbox_default_enabled', '1' if sandbox_enabled else '0')
-        db.set_agent_tools(agent_id, ['bash', 'runpy', 'patch', 'write_file', 'read_file'])
+        db.set_agent_tools(agent_id, [
+            'bash', 'runpy', 'patch', 'write_file', 'read_file',
+            'skill:scheduler:create_schedule',
+            'skill:scheduler:cancel_schedule',
+            'skill:scheduler:list_schedules',
+        ])
+        db.set_agent_skills(agent_id, ['scheduler'])
         return jsonify({'success': True, 'agent_id': agent_id})
     except Exception as e:
         return jsonify({'error': str(e)}), 500

@@ -19,7 +19,6 @@ import argparse
 import json
 import logging
 import os
-import platform
 import shutil
 import signal
 import subprocess
@@ -52,6 +51,9 @@ log = logging.getLogger('supervisor')
 # Constants
 # ---------------------------------------------------------------------------
 
+# GitHub repo identifier for release API queries
+GITHUB_REPO = "anvie/evonic"
+
 SHARED_ITEMS = [
     ('db',      True),   # (name, is_directory)
     ('agents',  True),
@@ -72,11 +74,21 @@ DEFAULT_CONFIG = {
     'health_timeout': 10,
     'monitor_duration': 60,
     'keep_releases': 3,
-    'python_bin': sys.executable,
+    # python_bin defaults via detect_python_bin() at load time so the install
+    # venv (not the system interpreter) is preferred when supervisor runs.
+    'python_bin': None,
     'uv_bin': None,
     'telegram_bot_token': '',
     'telegram_chat_id': '',
 }
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers — sourced from supervisor/_helpers.py so migrate.py can reuse
+# the same detection logic without copy-paste drift.
+# ---------------------------------------------------------------------------
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _helpers import detect_python_bin, is_windows  # noqa: E402,F401  (re-exported for tests)
 
 # ---------------------------------------------------------------------------
 # Config
@@ -91,32 +103,37 @@ def load_config(config_path: str) -> dict:
         log.warning(f'Config file not found: {config_path} — using defaults')
     except json.JSONDecodeError as e:
         log.error(f'Config parse error: {e} — using defaults')
+
+    # Validate python_bin: prefer install venv if config value is missing or
+    # points at an interpreter that no longer exists. Avoids inheriting the
+    # system python that migrate.py may have captured at install time.
+    py = cfg.get('python_bin')
+    if not py or not os.path.exists(py):
+        resolved = detect_python_bin(cfg['app_root'])
+        if py and py != resolved:
+            log.warning(f'python_bin={py!r} not found; using {resolved}')
+        cfg['python_bin'] = resolved
+
     return cfg
-
-# ---------------------------------------------------------------------------
-# Platform abstraction
-# ---------------------------------------------------------------------------
-
-def is_windows() -> bool:
-    return platform.system() == 'Windows'
-
 
 def get_current_release(app_root: str) -> Optional[str]:
     """Return the tag name of the currently active release, or None.
 
     Resolution order:
     1. ``current`` symlink (Unix) / ``current.slot`` (Windows) — production
-       mode.  The target release directory must exist *and* its ``VERSION``
-       file must match the app root ``VERSION`` for the symlink to be
-       considered authoritative.
+       mode.  The symlink is authoritative when the release directory
+       exists **and** its ``VERSION`` agrees with the symlink target.
+       ``app-root/VERSION`` is only a cache; a mismatch with the
+       self-consistent symlink just means the cache is stale.
     2. ``VERSION`` file at the app root — fallback for flat-repo /
        development mode or when the symlink is stale.  The value is
        normalised to match the git tag format (``v`` prefix added if
        missing).
 
     If the symlink is stale (points to a release that no longer exists or
-    whose version differs from the running code), a warning is logged and
-    the VERSION file is used instead.
+    whose version disagrees with *both* the symlink target and the
+    app-root VERSION), a warning is logged and the VERSION file is used
+    instead.
     """
     version_from_file: Optional[str] = None
     version_file = os.path.join(app_root, 'VERSION')
@@ -128,7 +145,15 @@ def get_current_release(app_root: str) -> Optional[str]:
 
     def _check_symlink_tag(tag: str, release_dir: str) -> Optional[str]:
         """Return the tag if the symlink is authoritative, else None to
-        indicate the VERSION-file fallback should be used."""
+        indicate the VERSION-file fallback should be used.
+
+        Trust model: when ``current`` points to a release directory that
+        exists **and** whose ``VERSION`` matches the symlink tag, the
+        symlink is authoritative — ``app-root/VERSION`` is just a cache
+        that may be stale.  If the release VERSION disagrees with *both*
+        the symlink tag and app-root VERSION, something is wrong and we
+        fall back.
+        """
         if not os.path.isdir(release_dir):
             log.warning(
                 'current points to %s but release dir %s does not exist '
@@ -140,6 +165,17 @@ def get_current_release(app_root: str) -> Optional[str]:
         if os.path.exists(release_ver_file):
             with open(release_ver_file) as f2:
                 rv = f2.read().strip()
+            if rv == tag:
+                # Symlink and release agree — symlink is authoritative.
+                # The app-root VERSION cache may be stale; that's fine.
+                if version_from_file and rv != version_from_file:
+                    log.warning(
+                        'current symlink says %s, release VERSION confirms '
+                        '%s, but app-root VERSION is stale (%s) — trusting '
+                        'symlink',
+                        tag, rv, version_from_file,
+                    )
+                return tag
             if version_from_file and rv != version_from_file:
                 log.warning(
                     'current symlink says %s but release VERSION=%s differs '
@@ -261,6 +297,7 @@ def stop_daemon(app_root: str, timeout: int = 15) -> bool:
         return True
     if not _is_process_alive(pid):
         log.info(f'Daemon PID {pid} not alive — already stopped')
+        _remove_daemon_pid(app_root)
         return True
 
     log.info(f'Sending SIGTERM to daemon PID {pid}')
@@ -271,12 +308,14 @@ def stop_daemon(app_root: str, timeout: int = 15) -> bool:
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
+            _remove_daemon_pid(app_root)
             return True
 
     deadline = time.time() + timeout
     while time.time() < deadline:
         if not _is_process_alive(pid):
             log.info(f'Daemon PID {pid} stopped')
+            _remove_daemon_pid(app_root)
             return True
         time.sleep(0.5)
 
@@ -290,7 +329,34 @@ def stop_daemon(app_root: str, timeout: int = 15) -> bool:
         except ProcessLookupError:
             pass
     time.sleep(1)
+    _remove_daemon_pid(app_root)
     return not _is_process_alive(pid)
+
+
+def _write_daemon_pid(app_root: str, pid: int) -> None:
+    """Persist the running daemon's PID so the CLI can find it.
+
+    The CLI's ``evonic status`` and ``evonic stop`` read this file; without it
+    they report the server as not running even when supervisor has a live
+    daemon underneath.
+    """
+    pid_file = _pid_file(app_root)
+    try:
+        os.makedirs(os.path.dirname(pid_file), exist_ok=True)
+        with open(pid_file, 'w') as f:
+            f.write(str(pid))
+    except OSError as e:
+        log.warning(f'Could not write daemon PID file {pid_file}: {e}')
+
+
+def _remove_daemon_pid(app_root: str) -> None:
+    pid_file = _pid_file(app_root)
+    try:
+        os.remove(pid_file)
+    except FileNotFoundError:
+        pass  # already gone — nothing to do
+    except OSError as e:
+        log.warning(f'Could not remove daemon PID file {pid_file}: {e}')
 
 
 def start_daemon(release_path: str, app_root: str) -> tuple:
@@ -325,16 +391,28 @@ def start_daemon(release_path: str, app_root: str) -> tuple:
         return False, proc.pid
 
     log.info(f'Daemon started with PID {proc.pid}')
+    _write_daemon_pid(app_root, proc.pid)
     return True, proc.pid
 
 
 def start_daemon_from_current(app_root: str) -> tuple:
-    """Resolve current pointer and start daemon from that release."""
+    """Resolve current pointer and start daemon from that release.
+
+    Re-links shared/ items first. The release worktree's ``db``, ``.env`` etc.
+    may be missing or stale (manual cleanup, partial worktree, broken update);
+    without re-linking, ``config.py`` would resolve to empty paths and the app
+    would render the first-run setup screen on top of an existing install.
+    """
     tag = get_current_release(app_root)
     if not tag:
         log.error('Cannot start daemon: no current release pointer found')
         return False, 0
     release_path = os.path.join(app_root, 'releases', tag)
+    try:
+        _migrate_legacy_env(app_root)
+        link_shared_dirs(app_root, release_path)
+    except Exception as e:
+        log.warning(f'link_shared_dirs failed before start: {e}')
     return start_daemon(release_path, app_root)
 
 # ---------------------------------------------------------------------------
@@ -376,6 +454,39 @@ def get_latest_tag(app_root: str) -> Optional[str]:
     if rc != 0 or not out:
         return None
     return out.splitlines()[0].strip()
+
+
+def get_latest_release(app_root: str) -> Optional[str]:
+    """Return the tag name of the latest published GitHub release, or None.
+
+    Queries the GitHub Releases API so only published releases are
+    considered — dangling local tags, pre-release tags, or tags that
+    aren't published on GitHub are ignored.
+
+    Returns None on any network / API error — no fallback to local tags.
+    """
+    import urllib.request
+    import json as _json
+
+    url = f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
+    req = urllib.request.Request(url, method='GET')
+    req.add_header('Accept', 'application/vnd.github.v3+json')
+    req.add_header('User-Agent', 'evonic-update-checker/1.0')
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = _json.loads(resp.read().decode())
+            tag = data.get('tag_name')
+            if tag:
+                log.info('Latest release from GitHub API: %s', tag)
+                return tag
+            log.warning('GitHub release response missing tag_name: %s', data)
+    except urllib.error.HTTPError as e:
+        log.warning('GitHub API HTTP %d: %s — skipping update check', e.code, e.reason)
+    except (urllib.error.URLError, OSError, _json.JSONDecodeError) as e:
+        log.warning('GitHub API request failed: %s — skipping update check', e)
+
+    return None
 
 
 def get_tag_sha(app_root: str, tag: str) -> Optional[str]:
@@ -502,8 +613,44 @@ def create_venv_and_install(release_path: str, python_bin: str,
 # Shared directory symlinking
 # ---------------------------------------------------------------------------
 
+def _migrate_legacy_env(app_root: str) -> None:
+    """Copy legacy ~/.evonic/.env (v0.2.x) to shared/.env if it's missing.
+
+    On v0.2.x the .env file lived at the app root (~/.evonic/.env).  v0.3.x
+    moved it to shared/.env which is symlinked into each release directory by
+    ``link_shared_dirs``.  If a legacy .env exists but shared/.env does not,
+    the symlink is never created and the daemon starts with no configuration
+    (admin login breaks).  This function bridges that gap by copying the
+    legacy file into shared/ so the existing symlink machinery picks it up.
+
+    The legacy file is *preserved* — only copied, never deleted.
+    On clean installs there is no legacy .env so this is a no-op.
+    """
+    legacy_env = os.path.join(app_root, '.env')
+    shared_env = os.path.join(app_root, 'shared', '.env')
+
+    if os.path.isfile(legacy_env) and not os.path.exists(shared_env):
+        log.info('Migrating legacy .env to shared/.env')
+        os.makedirs(os.path.dirname(shared_env), exist_ok=True)
+        shutil.copy2(legacy_env, shared_env)
+
 def link_shared_dirs(app_root: str, release_path: str) -> None:
-    """Symlink shared/ items into the release directory."""
+    """Symlink shared/ items into the release directory.
+
+    Idempotent: a link that already resolves to the correct shared target is
+    left untouched.
+
+    When a real (non-symlink) directory sits at the link path, the behaviour
+    depends on whether the shared target exists:
+
+    * If the shared target **exists**, the real directory is almost certainly
+      a git-tracked directory created by ``git worktree add`` (e.g.
+      ``plugins/``) and does **not** hold user data — it is removed and
+      replaced with a symlink to ``shared/``.
+    * If the shared target does **not** exist, the real directory is
+      preserved — it may hold user data that hasn't been migrated to
+      ``shared/`` yet.
+    """
     shared_root = os.path.join(app_root, 'shared')
 
     for name, is_dir in SHARED_ITEMS:
@@ -515,10 +662,24 @@ def link_shared_dirs(app_root: str, release_path: str) -> None:
             log.debug(f'Shared item not found, skipping: {target}')
             continue
 
-        # Remove whatever git worktree put there
         if os.path.islink(link):
+            try:
+                if os.path.realpath(link) == os.path.realpath(target):
+                    continue  # already correctly linked
+            except OSError:
+                pass
             os.unlink(link)
         elif os.path.isdir(link):
+            # Real directory at link path while shared/ target exists.
+            # This happens when git tracks a directory that is also a
+            # shared item (e.g. plugins/) — git worktree add checks it
+            # out as a real directory, blocking the symlink.  Since the
+            # shared/ target exists (checked above), the real directory
+            # is stale git content, not user data.  Remove it.
+            log.info(
+                f'Removing git-tracked directory {link} '
+                f'to create shared symlink to {target}'
+            )
             shutil.rmtree(link)
         elif os.path.exists(link):
             os.unlink(link)
@@ -728,6 +889,11 @@ def rollback(app_root: str, cfg: dict, notifier: Optional[TelegramNotifier]) -> 
     try:
         stop_daemon(app_root)
         atomic_swap(app_root, old_path)
+        # Sync app-root/VERSION so next restart picks up the rollback release
+        with open(os.path.join(old_path, 'VERSION')) as f:
+            rollback_version = f.read().strip()
+        with open(os.path.join(app_root, 'VERSION'), 'w') as f:
+            f.write(rollback_version)
         ok, _ = start_daemon(old_path, app_root)
         if ok:
             log.info(f'Rollback to {old_tag} successful')
@@ -809,6 +975,80 @@ def _resolve_port_from_env(release_path: str, fallback: int = 8080) -> int:
     return fallback
 
 
+def preflight_checks(app_root: str, tag: str, cfg: dict, nightly: bool = False) -> tuple[bool, list[str]]:
+    """Run pre-flight checks before starting update.
+    
+    Returns (success, warnings) where warnings is a list of non-fatal issues.
+    Raises UpdateError for fatal issues that prevent update.
+    """
+    warnings = []
+    
+    # Check 1: Disk space (require at least 500MB free)
+    try:
+        stat = os.statvfs(app_root) if hasattr(os, 'statvfs') else None
+        if stat:
+            free_bytes = stat.f_bavail * stat.f_frsize
+            free_mb = free_bytes / (1024 * 1024)
+            if free_mb < 500:
+                raise UpdateError(
+                    f'Insufficient disk space: {free_mb:.0f}MB free, need at least 500MB'
+                )
+            elif free_mb < 1000:
+                warnings.append(f'Low disk space: {free_mb:.0f}MB free (recommended: 1GB+)')
+    except AttributeError:
+        # Windows doesn't have statvfs, use shutil.disk_usage
+        try:
+            usage = shutil.disk_usage(app_root)
+            free_mb = usage.free / (1024 * 1024)
+            if free_mb < 500:
+                raise UpdateError(
+                    f'Insufficient disk space: {free_mb:.0f}MB free, need at least 500MB'
+                )
+            elif free_mb < 1000:
+                warnings.append(f'Low disk space: {free_mb:.0f}MB free (recommended: 1GB+)')
+        except Exception:
+            warnings.append('Could not check disk space')
+    
+    # Check 2: Git repository health
+    if not nightly:
+        rc, out, err = _git(app_root, ['rev-parse', '--verify', f'refs/tags/{tag}'])
+        if rc != 0:
+            raise UpdateError(f'Tag {tag} not found in repository. Run git fetch first.')
+    else:
+        rc, out, err = _git(app_root, ['rev-parse', '--verify', f'origin/{tag}'])
+        if rc != 0:
+            raise UpdateError(f'Branch {tag} not found. Run git fetch first.')
+    
+    # Check 3: Git working directory clean (warn only)
+    rc, out, err = _git(app_root, ['status', '--porcelain'])
+    if rc == 0 and out.strip():
+        warnings.append('Git working directory has uncommitted changes')
+    
+    # Check 4: Network connectivity (for dependency installation)
+    # Try to resolve a common package index
+    try:
+        import socket
+        socket.create_connection(('pypi.org', 443), timeout=5).close()
+    except (socket.error, socket.timeout):
+        warnings.append('Network connectivity issue detected - dependency installation may fail')
+    except Exception:
+        pass  # Other errors are non-fatal
+    
+    # Check 5: Current release exists and is healthy
+    current_tag = get_current_release(app_root)
+    if current_tag:
+        current_path = os.path.join(app_root, 'releases', current_tag)
+        if not os.path.isdir(current_path):
+            warnings.append(f'Current release directory not found: {current_tag}')
+    
+    # Check 6: Python binary exists and is executable
+    python_bin = cfg.get('python_bin')
+    if python_bin and not os.path.isfile(python_bin):
+        raise UpdateError(f'Python binary not found: {python_bin}')
+    
+    return True, warnings
+
+
 def run_update(tag: str, cfg: dict, notifier: Optional[TelegramNotifier],
                skip_verify: bool = False, nightly: bool = False) -> bool:
     """
@@ -837,6 +1077,22 @@ def run_update(tag: str, cfg: dict, notifier: Optional[TelegramNotifier],
 
     step = 0
     try:
+        # Step 0: Pre-flight checks
+        log.info('Running pre-flight checks...')
+        try:
+            ok, warnings = preflight_checks(app_root, tag, cfg, nightly)
+            if warnings:
+                for warning in warnings:
+                    log.warning(f'Pre-flight warning: {warning}')
+                    if notifier:
+                        notifier.send_progress(0, TOTAL_STEPS, f'Warning: {warning}')
+            log.info('Pre-flight checks passed')
+        except UpdateError as e:
+            log.error(f'Pre-flight check failed: {e}')
+            if notifier:
+                notifier.send_failure(0, TOTAL_STEPS, str(e))
+            return False
+        
         # Step 1: Fetch (already done in poll loop or by caller; log it)
         step = 1
         if nightly:
@@ -883,6 +1139,7 @@ def run_update(tag: str, cfg: dict, notifier: Optional[TelegramNotifier],
         if not ok:
             raise UpdateError(f'Dependency installation failed: {err}')
 
+        _migrate_legacy_env(app_root)
         link_shared_dirs(app_root, release_path)
 
         # Step 4: Health check on temp port
@@ -904,6 +1161,14 @@ def run_update(tag: str, cfg: dict, notifier: Optional[TelegramNotifier],
         if current_tag:
             write_rollback_slot(app_root, current_tag)
         atomic_swap(app_root, release_path)
+
+        # Sync app-root/VERSION so the fallback on next restart is fresh.
+        # Without this, get_current_release() may prefer the stale
+        # app-root/VERSION over the correct symlink (see _check_symlink_tag).
+        with open(os.path.join(release_path, 'VERSION')) as f:
+            release_version = f.read().strip()
+        with open(os.path.join(app_root, 'VERSION'), 'w') as f:
+            f.write(release_version)
 
         # Step 6: Restart + monitor
         step = 6

@@ -9,6 +9,9 @@ Handles the full kanban workflow:
 - Scanner/notifier (periodic scan + agent notification via scheduler)
 - on_tool_executed, on_kanban_task_created, on_kanban_task_updated, on_schedule_fired
 """
+from __future__ import annotations
+
+from typing import Optional
 
 import json as _json
 import os
@@ -69,7 +72,7 @@ KANBAN_ALLOWED_TOOLS = {
     'use_skill', 'unload_skill',
     'kanban_search_tasks', 'kanban_update_status', 'kanban_update_task',
     'kanban_add_comment',
-    'kanban_get_task',
+    'kanban_get_task', 'kanban_get_comments',
     'set_mode', 'save_plan',
     'state',
 }
@@ -323,10 +326,18 @@ def _get_kanban_skill_agents() -> list:
             agent_id = agent['id']
             if agent.get('is_super'):
                 result.append(agent_id)
-            elif 'kanban' in db.get_agent_skills(agent_id):
-                result.append(agent_id)
+                continue
+            try:
+                if 'kanban' in db.get_agent_skills(agent_id):
+                    result.append(agent_id)
+            except Exception:
+                # Per-agent skill lookup failed — don't crash the whole list
+                import traceback
+                traceback.print_exc()
         return result
     except Exception:
+        import traceback
+        traceback.print_exc()
         return []
 
 
@@ -369,6 +380,8 @@ def _agent_has_kanban_skill(agent_id: str) -> bool:
             return True
         return 'kanban' in db.get_agent_skills(agent_id)
     except Exception:
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -707,7 +720,7 @@ def _notify_stale_task(agent_id: str, task: dict, channel_type: str, sdk=None):
     try:
         from backend.agent_runtime import agent_runtime as _ar
         if _ar.is_agent_busy(agent_id):
-            _log(f'Agent {agent_id} is busy (LLM turn), deferring stale task reminder for {task_id}', 'info', sdk)
+            #_log(f'Agent {agent_id} is busy (LLM turn), deferring stale task reminder for {task_id}', 'info', sdk)
             return
     except Exception:
         pass
@@ -1536,7 +1549,7 @@ def _state_handler(agent_id: str, session_id: str, agent_state, label: str, data
 
 # ─── Tool guard ───────────────────────────────────────────────────────────────
 
-def _tool_guard(agent_id: str, tool_name: str, args: dict) -> dict | None:
+def _tool_guard(agent_id: str, tool_name: str, args: dict) -> Optional[dict]:
     """Block tools for agents with a pending or paused task.
 
     Pending: Autopilot=ON allows KANBAN_ALLOWED_TOOLS. Autopilot=OFF allows
@@ -1573,8 +1586,15 @@ def _tool_guard(agent_id: str, tool_name: str, args: dict) -> dict | None:
         if task is None or task.get('status') in ('done', 'in-progress'):
             _pending_tasks.pop(agent_id, None)
             return None
-    except Exception:
-        pass
+        # Clear if task is no longer assigned to this agent
+        if task.get('assignee') and task.get('assignee') != agent_id:
+            _pending_tasks.pop(agent_id, None)
+            return None
+    except Exception as e:
+        import logging
+        logging.getLogger('kanban.tool_guard').warning(
+            'Self-heal DB check failed for agent %s task %s: %s', agent_id, task_id, e
+        )
 
     if autopilot:
         msg = (
@@ -1710,7 +1730,7 @@ def _message_interceptor(agent_id: str, content: str, messages: list):
 #                f"and state('kanban:activate', {{'task_id': '{task_id}'}}) NOW."
             )
             if not any(m.get('role') == 'user' and m.get('content') == _plan_nudge
-                       for m in messages[-6:]):
+                       for m in messages):
                 return {'inject': _plan_nudge}
 
         _approved_reminder = (
@@ -1718,12 +1738,11 @@ def _message_interceptor(agent_id: str, content: str, messages: list):
 #            f"Call state('kanban:activate', {{'task_id': '{task_id}'}}) NOW. "
 #            f"Do NOT respond with text first — make the tool call immediately."
         )
-        # Dedup: skip if the same reminder was already injected in the last 6 messages.
-        # This prevents double-injection when both the post-tool and pre-final interceptor
-        # paths fire in the same LLM turn.
-        _tail = messages[-6:]
+        # Dedup: skip if the same reminder was already injected anywhere in messages.
+        # Using only messages[-6:] caused infinite loops when each iteration added
+        # messages that pushed the original injection out of the window.
         if any(m.get('role') == 'user' and m.get('content') == _approved_reminder
-               for m in _tail):
+               for m in messages):
             return None
         return {'inject': _approved_reminder}
 
@@ -1757,7 +1776,7 @@ def _message_interceptor(agent_id: str, content: str, messages: list):
             f"Your task is #{task_id} — work on it now."
         )
         if not any(m.get('role') == 'user' and m.get('content') == _active_plan_nudge
-                   for m in messages[-6:]):
+                   for m in messages):
             return {'inject': _active_plan_nudge}
 
     # ── progress reminder: agent used a real tool, time to log progress ─────
@@ -1911,7 +1930,7 @@ def on_tool_executed(event, sdk):
 
 # ─── Busy message provider ────────────────────────────────────────────────────
 
-def _busy_message_provider(agent_id: str, agent_state) -> str | None:
+def _busy_message_provider(agent_id: str, agent_state) -> Optional[str]:
     """Return a contextual message when the agent is busy with a kanban task."""
     task_id = _active_tasks.get(agent_id) or _pending_tasks.get(agent_id) or _paused_tasks.get(agent_id)
     if not task_id:

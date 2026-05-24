@@ -7,13 +7,35 @@ including insertion-only hunks with no surrounding context.
 
 import os
 import re
-import shutil
-import subprocess
-import tempfile
+
+try:
+    from config import SANDBOX_WORKSPACE as _WORKSPACE_ROOT
+except ImportError:
+    _WORKSPACE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from backend.tools._workspace import resolve_workspace_path
-
+try:
+    from backend.tools.lib.safety_pipeline import should_skip_safety
+except ImportError:
+    import logging
+    logging.getLogger(__name__).warning("safety_pipeline unavailable — safety checks disabled for patch tool")
+    should_skip_safety = lambda agent: True
 SEARCH_WINDOW = 50
+
+
+def _unescape_llm(s: str) -> str:
+    """Remove common LLM double-escaping from a string."""
+    return s.replace('\\"', '"').replace("\\'", "'")
+
+
+def _normalize_for_match(s: str) -> str:
+    """Normalize a string for fuzzy matching.
+
+    Handles LLM double-escaping AND JSON unicode escapes (\\uXXXX → char),
+    so that e.g. ``\\u2192`` in the file matches ``→`` in the patch.
+    """
+    s = _unescape_llm(s)
+    return re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), s)
 
 
 # ---------------------------------------------------------------------------
@@ -121,12 +143,16 @@ def _find_hunk_pos(lines: list, hunk_lines: list, stated_pos: int,
     For insertion-only hunks (no context or removal lines) the stated position
     is trusted directly — no search is needed.
 
-    For hunks with context/removal lines, searches outward from `stated_pos`
-    within ±SEARCH_WINDOW lines, comparing after stripping trailing whitespace.
+    For hunks with context/removal lines, uses tiered matching:
+      1. Exact match (trailing whitespace stripped) within ±SEARCH_WINDOW
+      2. Indent-tolerant match (all whitespace stripped) within ±SEARCH_WINDOW
+      3. Indent-tolerant match across the entire file
+      4. Unescape-tolerant match (handles LLM double-escaping like \\" → ")
 
     `lines` may contain line endings or bare strings — both are handled.
 
-    Returns (pos, None) on success, (-1, None) if no match found.
+    Returns (pos, None) on success, (pos, 'unescape') when matched via
+    unescape-tolerant tier, or (-1, None) if no match found.
     """
     to_match = [(op, txt) for op, txt, _ in hunk_lines if op in (' ', '-')]
 
@@ -135,18 +161,60 @@ def _find_hunk_pos(lines: list, hunk_lines: list, stated_pos: int,
         pos = max(0, min(stated_pos, len(lines)))
         return (pos, None)
 
+    match_len = len(to_match)
     window = SEARCH_WINDOW if fuzzy else 0
 
+    # --- Tier 1: exact match (trailing whitespace stripped), ±window ---
     for delta in range(window + 1):
         for sign in ([0] if delta == 0 else [1, -1]):
             pos = stated_pos + sign * delta
-            if pos < 0 or pos + len(to_match) > len(lines):
+            if pos < 0 or pos + match_len > len(lines):
                 continue
             if all(
                 lines[pos + i].rstrip('\r\n').rstrip() == to_match[i][1].rstrip()
-                for i in range(len(to_match))
+                for i in range(match_len)
             ):
                 return (pos, None)
+
+    if not fuzzy:
+        return (-1, None)
+
+    # Pre-compute stripped versions for tier 2 and 3.
+    match_stripped = [txt.strip() for _, txt in to_match]
+    lines_stripped = [l.rstrip('\r\n').strip() for l in lines]
+
+    # --- Tier 2: indent-tolerant match, ±window ---
+    for delta in range(window + 1):
+        for sign in ([0] if delta == 0 else [1, -1]):
+            pos = stated_pos + sign * delta
+            if pos < 0 or pos + match_len > len(lines_stripped):
+                continue
+            if all(
+                lines_stripped[pos + i] == match_stripped[i]
+                for i in range(match_len)
+            ):
+                return (pos, None)
+
+    # --- Tier 3: indent-tolerant match, full-file scan ---
+    for pos in range(len(lines_stripped) - match_len + 1):
+        if all(
+            lines_stripped[pos + i] == match_stripped[i]
+            for i in range(match_len)
+        ):
+            return (pos, None)
+
+    # --- Tier 4: normalize-tolerant match (LLM double-escaping + \uXXXX) ---
+    # Handles: \" vs ", \' vs ', \u2192 vs → (either side may have either form)
+    match_norm = [_normalize_for_match(txt).rstrip() for _, txt in to_match]
+    lines_norm = [_normalize_for_match(l.rstrip('\r\n')).rstrip() for l in lines]
+    if (match_norm != [txt.rstrip() for _, txt in to_match] or
+            lines_norm != [l.rstrip('\r\n').rstrip() for l in lines]):
+        for pos in range(len(lines_norm) - match_len + 1):
+            if all(
+                lines_norm[pos + i] == match_norm[i]
+                for i in range(match_len)
+            ):
+                return (pos, 'unescape')
 
     return (-1, None)
 
@@ -197,7 +265,7 @@ def _apply_hunks_to_content(raw: str, patch_text: str) -> dict:
 
         # ── Context hunk: find matching position ──
         stated_pos = hunk['old_start'] - 1 + offset
-        pos, _ = _find_hunk_pos(lines, hunk_lines, stated_pos, fuzzy=True)
+        pos, match_hint = _find_hunk_pos(lines, hunk_lines, stated_pos, fuzzy=True)
 
         if pos == -1:
             anchor = _find_first_anchor(lines, hunk_lines)
@@ -223,13 +291,14 @@ def _apply_hunks_to_content(raw: str, patch_text: str) -> dict:
             return {
                 'error': (
                     f'Context not found for hunk at line {hunk["old_start"]} '
-                    f'(searched ±{SEARCH_WINDOW} lines{hint}). '
+                    f'(searched entire file{hint}). '
                     'Action: call read_file() to get the current file content, '
                     f'then reconstruct your patch from scratch.{read_hint}'
                 )
             }
 
         # ── Apply the hunk ──
+        needs_unescape = match_hint == 'unescape'
         result_lines = []
         file_idx = pos
         for op, txt, _ in hunk_lines:
@@ -239,7 +308,7 @@ def _apply_hunks_to_content(raw: str, patch_text: str) -> dict:
             elif op == '-':
                 file_idx += 1
             elif op == '+':
-                result_lines.append(txt)
+                result_lines.append(_unescape_llm(txt) if needs_unescape else txt)
 
         consumed = sum(1 for op, _, _ in hunk_lines if op in (' ', '-'))
         produced = sum(1 for op, _, _ in hunk_lines if op in (' ', '+'))
@@ -248,7 +317,7 @@ def _apply_hunks_to_content(raw: str, patch_text: str) -> dict:
 
     # Reconstruct file content.
     result = '\n'.join(lines)
-    if trailing_newline:
+    if trailing_newline and lines:
         result += '\n'
     if crlf:
         result = result.replace('\n', '\r\n')
@@ -320,7 +389,7 @@ def apply_hunks(file_path: str, patch_text: str) -> dict:
 
         # ── Context hunk: find matching position ──────────────────────────
         stated_pos = hunk['old_start'] - 1 + offset
-        pos, _ = _find_hunk_pos(lines, hunk_lines, stated_pos, fuzzy=True)
+        pos, match_hint = _find_hunk_pos(lines, hunk_lines, stated_pos, fuzzy=True)
 
         if pos == -1:
             # Build a helpful error message.
@@ -348,13 +417,14 @@ def apply_hunks(file_path: str, patch_text: str) -> dict:
             return {
                 'error': (
                     f'Context not found for hunk at line {hunk["old_start"]} '
-                    f'(searched ±{SEARCH_WINDOW} lines{hint}). '
+                    f'(searched entire file{hint}). '
                     'Action: call read_file() to get the current file content, '
                     f'then reconstruct your patch from scratch.{read_hint}'
                 )
             }
 
         # ── Apply the hunk ─────────────────────────────────────────────────
+        needs_unescape = match_hint == 'unescape'
         result_lines = []
         file_idx = pos
         for op, txt, _ in hunk_lines:
@@ -364,7 +434,7 @@ def apply_hunks(file_path: str, patch_text: str) -> dict:
             elif op == '-':
                 file_idx += 1
             elif op == '+':
-                result_lines.append(txt)
+                result_lines.append(_unescape_llm(txt) if needs_unescape else txt)
 
         consumed = sum(1 for op, _, _ in hunk_lines if op in (' ', '-'))
         produced = sum(1 for op, _, _ in hunk_lines if op in (' ', '+'))
@@ -373,7 +443,7 @@ def apply_hunks(file_path: str, patch_text: str) -> dict:
 
     # Reconstruct file content.
     result = '\n'.join(lines)
-    if trailing_newline:
+    if trailing_newline and lines:
         result += '\n'
     if crlf:
         result = result.replace('\n', '\r\n')
@@ -388,53 +458,11 @@ def apply_hunks(file_path: str, patch_text: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# System `patch` binary backend
-# ---------------------------------------------------------------------------
-
-def _apply_with_binary(file_path: str, patch_text: str, hunks: list) -> dict:
-    """Apply patch using the system `patch` utility."""
-    with tempfile.NamedTemporaryFile(
-        mode='w', suffix='.patch', delete=False, encoding='utf-8'
-    ) as tf:
-        # system patch binary requires the patch file to end with a newline
-        tf.write(patch_text if patch_text.endswith('\n') else patch_text + '\n')
-        patch_file = tf.name
-
-    try:
-        proc = subprocess.run(
-            [
-                'patch',
-                '--forward',               # don't try to reverse-apply
-                '--no-backup-if-mismatch', # no .orig files
-                '--reject-file=/dev/null', # discard .rej files
-                file_path,
-                patch_file,
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if proc.returncode == 0:
-            return {'result': 'success', 'hunks_applied': len(hunks)}
-        output = '\n'.join(filter(None, [proc.stdout.strip(), proc.stderr.strip()]))
-        return {'error': f'patch failed:\n{output}'}
-    finally:
-        try:
-            os.unlink(patch_file)
-        except OSError:
-            pass
-
-
-# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
 def apply_patch(file_path: str, patch_text: str) -> dict:
-    """
-    Apply a unified diff patch to a file.
-
-    Uses the system `patch` utility if available on PATH; otherwise falls back
-    to the pure-Python implementation (`apply_hunks`).
-    """
+    """Apply a unified diff patch to a file using the pure-Python implementation."""
     try:
         hunks = parse_hunks(patch_text)
     except Exception as e:
@@ -442,37 +470,6 @@ def apply_patch(file_path: str, patch_text: str) -> dict:
 
     if not hunks:
         return {'error': 'No valid hunks found in patch. Make sure it contains @@ hunk headers. For simple edits, consider using str_replace instead.'}
-
-    creating_new = all(h['old_start'] == 0 and h['old_count'] == 0 for h in hunks)
-
-    if not os.path.exists(file_path):
-        if not creating_new:
-            return {'error': f'File not found: {file_path}'}
-        parent = os.path.dirname(os.path.abspath(file_path))
-        os.makedirs(parent, exist_ok=True)
-        open(file_path, 'w').close()
-
-    if shutil.which('patch'):
-        # Read original content so we can restore on partial failure.
-        try:
-            with open(file_path, 'r', encoding='utf-8', errors='replace', newline='') as f:
-                original_content = f.read()
-        except OSError:
-            original_content = None
-
-        result = _apply_with_binary(file_path, patch_text, hunks)
-        if 'error' not in result:
-            return result
-
-        # Binary patch failed (e.g. mismatched hunk counts from LLM) — restore
-        # the original file before falling through to the Python implementation
-        # which is more lenient. The binary may have partially applied hunks.
-        if original_content is not None:
-            try:
-                with open(file_path, 'w', encoding='utf-8', newline='') as f:
-                    f.write(original_content)
-            except OSError:
-                pass
 
     return apply_hunks(file_path, patch_text)
 
@@ -493,14 +490,14 @@ def execute(agent, args: dict) -> dict:
         return {'error': "'patch' must be a string containing unified diff content"}
 
     # Heuristic safety check: block access to .ssh directory
-    if agent is None or agent.get("safety_checker_enabled", 1):
+    if not should_skip_safety(agent) and (agent is None or agent.get("safety_checker_enabled", 1)):
         from backend.tools.safety_checker import check_ssh_path
         ssh_check = check_ssh_path(file_path, agent)
         if ssh_check["blocked"]:
             return {"error": ssh_check["error"]}
 
     # Heuristic safety check: require approval for sensitive system paths
-    if not (agent or {}).get('is_super') and (agent is None or agent.get("safety_checker_enabled", 1)):
+    if not should_skip_safety(agent) and not (agent or {}).get('is_super') and (agent is None or agent.get("safety_checker_enabled", 1)):
         from backend.tools.safety_checker import check_sensitive_path
         path_check = check_sensitive_path(file_path, agent)
         if path_check["blocked"]:
@@ -511,8 +508,29 @@ def execute(agent, args: dict) -> dict:
                 "approval_info": {
                     "risk_level": "medium",
                     "description": "Patching sensitive system paths may compromise system integrity.",
+                    "file_path": file_path,
                 },
             }
+
+    # Heuristic safety check: require approval for .env files
+    if not should_skip_safety(agent) and not (agent or {}).get('is_super') and (agent is None or agent.get("safety_checker_enabled", 1)):
+        from backend.tools.safety_checker import check_env_path
+        env_check = check_env_path(file_path, agent)
+        if env_check["blocked"]:
+            return {
+                "error": env_check["error"],
+                "level": "requires_approval",
+                "reasons": [env_check["reason"]],
+                "approval_info": {
+                    "risk_level": "high",
+                    "description": "Patching environment files may expose or corrupt secrets, API keys, or passwords.",
+                    "file_path": file_path,
+                },
+            }
+
+    # Normalise smart quotes in patch content before applying
+    from backend.normalizer import normalize_code_quotes
+    patch_text = normalize_code_quotes(patch_text)
 
     # /_self/ path: always route to the agent's local directory on the evonic server.
     from backend.tools._workspace import is_self_path, resolve_self_path
@@ -522,6 +540,45 @@ def execute(agent, args: dict) -> dict:
         if not local_path:
             return {'error': "Access denied — path escapes agent directory."}
         return apply_patch(local_path, patch_text)
+
+    # /_portal/ path: route through a virtual path mapping to local/SSH/evonet.
+    from backend.tools._portal import is_portal_path, resolve_portal_path
+    if agent_id and is_portal_path(file_path):
+        backend, real_path = resolve_portal_path(agent_id, file_path)
+        if backend is None:
+            return {'error': real_path}  # error message
+
+        # Parse hunks to check if this is creating a new file
+        creating_new = False
+        try:
+            hunks = parse_hunks(patch_text)
+            creating_new = all(h['old_start'] == 0 and h['old_count'] == 0 for h in hunks)
+        except Exception:
+            pass
+
+        if not backend.file_exists(real_path):
+            if not creating_new:
+                return {'error': f'File not found: {file_path}'}
+            parent = os.path.dirname(real_path)
+            if parent:
+                backend.make_dirs(parent)
+
+        if creating_new and not backend.file_exists(real_path):
+            backend.write_file(real_path, '')
+
+        read_result = backend.read_file(real_path)
+        if 'error' in read_result:
+            return {'error': read_result['error']}
+
+        result = _apply_hunks_to_content(read_result['content'], patch_text)
+        if 'error' in result:
+            return result
+
+        wr = backend.write_file(real_path, result['content'])
+        if 'error' in wr:
+            return {'error': wr['error']}
+
+        return {'result': 'success', 'hunks_applied': result.get('hunks_applied', 0)}
 
     # When sandbox is enabled, route file I/O through the execution backend.
     sandbox_enabled = (agent or {}).get('sandbox_enabled', 1)
@@ -701,6 +758,33 @@ def test_execute():
     r = apply_hunks(tmp, '@@ -1,2 +1,2 @@\n target line\n-after target\n+REPLACED\n')
     assert r['result'] == 'success', r
     assert 'REPLACED' in read_file(tmp)
+    passed += 1
+
+    print('Test 13: LLM double-escaped quotes in context')
+    with open(tmp, 'w', encoding='utf-8') as f:
+        f.write('def foo():\n    """A docstring."""\n    x = 1\n    return x\n')
+    r = apply_hunks(tmp, '@@ -1,4 +1,4 @@\n def foo():\n     \\"\\"\\"A docstring.\\"\\"\\"\n-    x = 1\n+    x = 2\n     return x\n')
+    assert r['result'] == 'success', r
+    assert 'x = 2' in read_file(tmp)
+    assert '"""A docstring."""' in read_file(tmp)  # docstring preserved from file
+    passed += 1
+
+    print('Test 14: LLM double-escaped quotes in added lines')
+    with open(tmp, 'w', encoding='utf-8') as f:
+        f.write('def bar():\n    """Old doc."""\n    pass\n')
+    r = apply_hunks(tmp, '@@ -1,3 +1,3 @@\n def bar():\n-    \\"\\"\\"Old doc.\\"\\"\\"\n+    \\"\\"\\"New doc.\\"\\"\\"\n     pass\n')
+    assert r['result'] == 'success', r
+    assert '"""New doc."""' in read_file(tmp)  # unescaped in output
+    passed += 1
+
+    print('Test 15: JSON \\uXXXX in file vs decoded char in patch')
+    with open(tmp, 'w', encoding='utf-8') as f:
+        f.write('{\n  "label": "Model \\u2192 Mapping",\n  "value": 1\n}\n')
+    r = apply_hunks(tmp, '@@ -1,4 +1,4 @@\n {\n   "label": "Model \u2192 Mapping",\n-  "value": 1\n+  "value": 2\n }\n')
+    assert r['result'] == 'success', r
+    content = read_file(tmp)
+    assert '"value": 2' in content
+    assert '\\u2192' in content  # file's original escape preserved
     passed += 1
 
     os.unlink(tmp)

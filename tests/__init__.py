@@ -7,6 +7,7 @@ from .sql_gen import SQLGenTest
 from .tool_calling import ToolCallingTest
 from .reasoning import ReasoningTest
 from .health import HealthTest
+from .coding import CodingTest
 
 # Test registry
 TEST_CLASSES = {
@@ -15,7 +16,8 @@ TEST_CLASSES = {
     "sql": SQLGenTest,
     "tool_calling": ToolCallingTest,
     "reasoning": ReasoningTest,
-    "health": HealthTest
+    "health": HealthTest,
+    "coding": CodingTest
 }
 
 def get_test_class(domain: str):

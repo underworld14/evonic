@@ -6,7 +6,6 @@ import sys
 import os
 import signal
 import time
-from datetime import datetime
 # Ensure the project root is on sys.path so we can import app and its modules
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -17,38 +16,8 @@ try:
 except ImportError:
     pass
 
-# Banner color by day of week (0=Monday, 1=Tuesday, etc.)
-_DAY_COLORS = [
-    "\033[91m",  # Monday    - Bright Red
-    "\033[35m",  # Tuesday   - Magenta
-    "\033[32m",  # Wednesday - Green
-    "\033[93m",  # Thursday  - Bright Yellow
-    "\033[34m",  # Friday    - Blue
-    "\033[36m",  # Saturday  - Cyan
-    "\033[93m",  # Sunday    - Bright Yellow (gold)
-]
-_RESET = "\033[0m"
-
-EVONIC_BANNER = _DAY_COLORS[datetime.now().weekday()] + r"""
-
-         ░░░░░░░░░░░░░░░░░░░░░░░░
-       ░░▒▒███████████████████▒▒░░
-     ░░▒▒██▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓██▒▒░░      ___________                  .__.
-     ░░▒▒██▓▓▒▒░░░░░░░░░░▒▒▓▓██▒▒░░      \_   _____/__  ______   ____ |__| _____
-     ░░▒▒██▓▓▒▒░░ ░░  ░░ ▒▒▓▓██▒▒░░       |    __)_\  \/ /    \ /    \|  |/ ____\
-     ░░▒▒██▓▓▒▒░░░░░░░░░░▒▒▓▓██▒▒░░       |        \\   (  ()  )   |  \  \  \____
-     ░░▒▒████████████████████▒▒░░░░      /_______  / \_/ \____/|___|  /__|\___  /
-       ░░▒▒░░░░░░░░░░░░░░░░░░░░                  \/                 \/        \/
-        ▓▓ ░░▓▓ ░░ ▓▓ ░░▓▓ ░░▓▓
-      ▒▒ ░░ ▒▒ ▓▓  ▒▒  ▓▓   ▒▒▒
-        ░░ ░▒░  ▓▓  ▒▒  ▓▓  ░▓
-          ▒▒ ▒▒░▒▒  ▒▒░░▒  ▒▒
-            ░░    ▓▓▓▓    ▓▓
-              ▒▒        ▒▒
-
-""" + _RESET
-
 from cli.commands import (
+    EVONIC_BANNER,
     start_server, stop_server, status_server, restart_server,
     plugin_list, plugin_install, plugin_uninstall, plugin_enable, plugin_disable, plugin_new,
     skill_list, skill_add, skill_get, skill_rm,
@@ -56,9 +25,11 @@ from cli.commands import (
     agent_list, agent_get, agent_add, agent_enable, agent_disable, agent_remove,
     model_list, model_get, model_add, model_rm,
     channel_approve,
+    clear_sandbox,
     update_server, setup_wizard, pass_setup,
     doctor_command,
     reconfigure_wizard,
+    backup_command, restore_command, verify_command, list_command,
 )
 
 
@@ -492,6 +463,71 @@ def main():
         help="Model ID to remove",
     )
 
+    # --- clear-sandbox ---
+    subparsers.add_parser(
+        "clear-sandbox",
+        help="Destroy all running evonic sandbox containers",
+        description="Force-destroy all Docker sandbox containers managed by evonic (useful after a crash or for cleanup).",
+    )
+
+    # --- backup ---
+    backup_parser = subparsers.add_parser(
+        "backup",
+        help="Create a full Evonic backup archive",
+        description="Create a compressed backup of all Evonic data (agents, DB, plugins, config, keys, plans).",
+    )
+    backup_parser.add_argument(
+        "--output", "-o", type=str, default=None,
+        help="Output file or directory (if directory, backup is saved inside with default filename)"
+    )
+    backup_parser.add_argument(
+        "--format", type=str, default="gz", choices=["gz", "bz2", "zip"],
+        help="Compression format: gz (fastest), bz2 (smaller), zip (default: gz)"
+    )
+    backup_parser.add_argument(
+        "--quiet", "-q", action="store_true", default=False,
+        help="Suppress progress output"
+    )
+    backup_parser.add_argument(
+        "--exclude", type=str, action="append", default=None,
+        help="Exclude a file pattern (repeatable)"
+    )
+    backup_parser.add_argument(
+        "--encrypt", action="store_true", default=False,
+        help="Encrypt the backup with AES-256-GCM (passphrase prompted from stdin)"
+    )
+    backup_parser.add_argument(
+        "--verify", type=str, default=None, metavar="FILE",
+        help="Verify a backup archive integrity against its manifest"
+    )
+    backup_parser.add_argument(
+        "--list", type=str, default=None, metavar="FILE",
+        help="List contents of a backup archive without extracting"
+    )
+
+    # --- restore ---
+    restore_parser = subparsers.add_parser(
+        "restore",
+        help="Restore Evonic from a backup archive",
+        description="Restore all Evonic data from a backup archive with rollback safety.",
+    )
+    restore_parser.add_argument(
+        "backup_file",
+        help="Path to the backup archive to restore from"
+    )
+    restore_parser.add_argument(
+        "--dry-run", action="store_true", default=False,
+        help="List files that would be restored without making changes"
+    )
+    restore_parser.add_argument(
+        "--force", action="store_true", default=False,
+        help="Proceed with restore without interactive prompt"
+    )
+    restore_parser.add_argument(
+        "--no-restart", action="store_true", default=False,
+        help="Do not restart the server after restore"
+    )
+
     # --- channel ---
     channel_parser = subparsers.add_parser(
         "channel",
@@ -667,6 +703,28 @@ def main():
             )
         elif args.model_command == "rm":
             model_rm(args.model_id)
+    elif args.command == "clear-sandbox":
+        clear_sandbox()
+    elif args.command == "backup":
+        if args.verify:
+            verify_command(args.verify)
+        elif args.list:
+            list_command(args.list)
+        else:
+            backup_command(
+                output=args.output,
+                fmt=args.format,
+                quiet=args.quiet,
+                exclude=args.exclude,
+                encrypt=args.encrypt,
+            )
+    elif args.command == "restore":
+        restore_command(
+            args.backup_file,
+            dry_run=args.dry_run,
+            force=args.force,
+            no_restart=args.no_restart,
+        )
     elif args.command == "channel":
         if args.channel_command is None:
             channel_parser.print_help()

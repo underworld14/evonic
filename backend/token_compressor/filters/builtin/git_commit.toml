@@ -1,0 +1,18 @@
+[filter]
+command = "^git\\s+commit"
+description = "Compact git commit — summary line only"
+strip_ansi = true
+match_output = [
+    { pattern = "nothing to commit", message = "git commit: nothing to commit, working tree clean" },
+]
+strip_lines = [
+    '^\[master',
+    '^\[main',
+    '^\[\w+',
+    '^\s+\d+ file',
+    '^create mode',
+    '^delete mode',
+    '^$',
+]
+head_lines = 5
+on_empty = "git commit: ok"

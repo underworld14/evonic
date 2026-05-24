@@ -1,0 +1,10 @@
+{
+  "id": "user-directory",
+  "name": "User Directory",
+  "version": "1.0.0",
+  "description": "User directory tools for managing users, contacts, tags, groups, and access control.",
+  "author": "Evonic",
+  "tools_file": "tools.json",
+  "variables": [],
+  "lazy_tools": true
+}

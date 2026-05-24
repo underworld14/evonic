@@ -1,0 +1,11 @@
+[filter]
+command = "^git\\s+add"
+description = "Compact git add — summary only"
+strip_ansi = true
+strip_lines = [
+    '^$',
+    '^warning: ',
+    '^hint: ',
+]
+head_lines = 10
+on_empty = "git add: nothing to stage"

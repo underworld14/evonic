@@ -1,0 +1,63 @@
+# Builtin RTK filter for Rust ecosystem tools.
+# Matches: cargo, rustc
+
+[filter]
+command = "^(cargo|rustc)"
+
+description = "Compress output from common Rust tools: cargo build/test/clippy/check, rustc"
+
+# ANSI escape codes are stripped before anything else runs
+strip_ansi = true
+
+# --- strip_lines: remove noise lines from stdout ---
+strip_lines = [
+    # -- cargo build / check: compilation progress noise --
+    "^\\s*Compiling ",
+    "^\\s*Checking ",
+    "^\\s*Fresh ",
+    "^\\s*Dirty ",
+    "^\\s*Blocking ",
+    "^\\s*Downloading ",
+    "^\\s*Downloaded ",
+    "^\\s*Updating ",
+    "^\\s*Removing ",
+
+    # -- cargo test: passing test lines --
+    "^test .+ \\.\\.\\. ok$",
+    "^running \\d+ tests?$",
+    "^test result: ok\\.",   # all-pass summary is noise (redundant when no failures)
+    "^test \\S+ has been running for over \\d+ seconds$",
+    "^\\s*Doc-tests ",
+
+    # -- cargo build/test: boilerplate tracking lines --
+    "^\\s*Build completed successfully",
+
+    # -- clippy / rustc: source-location context lines (LLM doesn't need line/column) --
+    "^\\s*--> ",              # location pointer lines
+    "^\\s*\\|",               # code-snippet gutter lines
+    "^\\s*=\\s",              # note/help continuation lines (LLM can infer)
+    "^\\s*\\^+",              # caret underline markers
+    "^\\s*\\|$",              # empty gutter lines
+
+    # -- cargo: informational banners --
+    "^\\s*warning: `[^`]+` \\(lib\\) generated",
+    "^\\s*warning: `[^`]+` \\(bin[^)]*\\) generated",
+    "^\\s*warning: build failed, waiting for other jobs to finish\\.\\.\\.$",
+    "^\\s*error: could not compile",
+
+    # -- generic: empty / whitespace-only lines --
+    "^\\s*$",
+]
+
+# --- keep_lines: empty — rely on strip_lines to prune noise ---
+keep_lines = []
+
+# If the entire output is filtered away, return this.
+on_empty = "(no output from Rust tool)"
+
+# --- replace: strip filename prefix from clippy/rustc diagnostics ---
+# Transforms "warning: unused variable" ... etc.  The --> lines are already
+# stripped above; this cleans up any remaining path noise in the message.
+[[filter.replace]]
+pattern = '\S+\.rs:\d+:\d+'
+replacement = "<file>"

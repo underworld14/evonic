@@ -202,16 +202,15 @@ class TestDriftTolerance:
         assert 'REPLACED' in read_file(p)
         os.unlink(p)
 
-    def test_drift_beyond_window_fails(self):
-        """Drift > 50 should not match."""
+    def test_drift_beyond_window_uses_full_scan(self):
+        """Drift > 50 is handled by full-file scan (tier 3)."""
         lines = [f'filler_{i}\n' for i in range(60)]
         lines.append('target\n')
         p = make_file(''.join(lines))
-        # stated_pos=0, content at line 61, drift=60 > 50
         hunks = parse_hunks('@@ -1,1 +1,1 @@\n target\n')
         file_lines = open(p).readlines()
         pos, _ = _find_hunk_pos(file_lines, hunks[0]['lines'], 0, fuzzy=True)
-        assert pos == -1
+        assert pos == 60  # Found via full-file scan
         os.unlink(p)
 
 
@@ -337,4 +336,67 @@ class TestInternals:
         hunks = parse_hunks('@@ -2,1 +2,1 @@\n beta\n')
         pos, _ = _find_hunk_pos(file_lines, hunks[0]['lines'], 1, fuzzy=True)
         assert pos == 1
+        os.unlink(p)
+
+    def test_find_hunk_pos_indent_tolerant(self):
+        """Indent-tolerant matching when exact match fails."""
+        lines = ['    foo\n', '    bar\n']
+        hunks = parse_hunks('@@ -1,2 +1,2 @@\n   foo\n-  bar\n+  BAR\n')
+        pos, _ = _find_hunk_pos(lines, hunks[0]['lines'], 0, fuzzy=True)
+        assert pos == 0
+
+    def test_find_hunk_pos_full_file_scan(self):
+        """Full-file scan when content is outside ±50 window."""
+        lines = [f'filler_{i}\n' for i in range(60)] + ['target\n']
+        hunks = parse_hunks('@@ -1,1 +1,1 @@\n target\n')
+        pos, _ = _find_hunk_pos(lines, hunks[0]['lines'], 0, fuzzy=True)
+        assert pos == 60
+
+
+# ---------------------------------------------------------------------------
+# 7. Fuzzy matching (indent-tolerant & full-file scan)
+# ---------------------------------------------------------------------------
+
+class TestFuzzyMatching:
+    def test_indent_tolerant_within_window(self):
+        """Patch has wrong indentation but content is within ±50 lines."""
+        p = make_file('    def foo():\n        return 1\n')
+        # Patch uses 2-space indent instead of 4-space
+        r = apply_hunks(p, '@@ -1,2 +1,2 @@\n   def foo():\n-      return 1\n+      return 2\n')
+        assert r['result'] == 'success', r
+        assert 'return 2' in read_file(p)
+        os.unlink(p)
+
+    def test_tabs_vs_spaces(self):
+        """File uses tabs, patch uses spaces."""
+        p = make_file('\tdef foo():\n\t\treturn 1\n')
+        r = apply_hunks(p, '@@ -1,2 +1,2 @@\n     def foo():\n-        return 1\n+        return 2\n')
+        assert r['result'] == 'success', r
+        os.unlink(p)
+
+    def test_full_file_scan_fallback(self):
+        """Content is >50 lines away from stated position."""
+        lines = [f'filler_{i}\n' for i in range(100)]
+        lines += ['unique_target\n', 'after_unique\n']
+        p = make_file(''.join(lines))
+        r = apply_hunks(p, '@@ -1,2 +1,2 @@\n unique_target\n-after_unique\n+REPLACED\n')
+        assert r['result'] == 'success', r
+        assert 'REPLACED' in read_file(p)
+        os.unlink(p)
+
+    def test_full_file_scan_with_indent_tolerance(self):
+        """Content is >50 lines away AND has wrong indentation."""
+        lines = [f'filler_{i}\n' for i in range(100)]
+        lines += ['    indented_target\n', '    after_target\n']
+        p = make_file(''.join(lines))
+        r = apply_hunks(p, '@@ -1,2 +1,2 @@\n indented_target\n-after_target\n+REPLACED\n')
+        assert r['result'] == 'success', r
+        assert 'REPLACED' in read_file(p)
+        os.unlink(p)
+
+    def test_nonexistent_content_still_fails(self):
+        """Truly non-existent content still returns error."""
+        p = make_file('line1\nline2\nline3\n')
+        r = apply_hunks(p, '@@ -1,2 +1,2 @@\n TOTALLY_NONEXISTENT\n-ALSO_NONEXISTENT\n+REPLACED\n')
+        assert 'error' in r
         os.unlink(p)

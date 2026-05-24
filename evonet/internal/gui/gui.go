@@ -1,23 +1,28 @@
-//go:build windows || darwin
+//go:build (windows || darwin) && !headless
 
 // Package gui provides the desktop GUI for Evonet.
-// Only compiled on Windows and macOS.
+// Only compiled on Windows and macOS (excluded when built with -tags headless).
 package gui
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"runtime"
 	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/evonic/evonet/internal/config"
@@ -25,11 +30,14 @@ import (
 	"github.com/evonic/evonet/internal/ws"
 )
 
+// GUIAvailable returns true — the real GUI is compiled in.
+func GUIAvailable() bool { return true }
+
 // RunGUI launches the connector window directly (config already available).
 // Must be called from the main goroutine.
 func RunGUI(cfg *config.Config) {
 	a := app.New()
-	w := a.NewWindow("Evonet")
+	w := a.NewWindow("Evonet v1.1.0")
 	w.Resize(fyne.NewSize(700, 420))
 
 	root := container.NewStack()
@@ -43,7 +51,7 @@ func RunGUI(cfg *config.Config) {
 // Must be called from the main goroutine.
 func ShowPairingDialog(prefilledServerURL string) {
 	a := app.New()
-	w := a.NewWindow("Evonet")
+	w := a.NewWindow("Evonet v1.1.0")
 	w.Resize(fyne.NewSize(700, 420))
 
 	root := container.NewStack()
@@ -68,14 +76,27 @@ func showConnectorView(a fyne.App, w fyne.Window, root *fyne.Container, cfg *con
 	statusLabel := widget.NewLabel("")
 	statusLabel.Truncation = fyne.TextTruncateEllipsis
 
+	connectedText := canvas.NewText("Connected.", color.RGBA{R: 0, G: 180, B: 0, A: 255})
+	connectedText.TextSize = theme.TextSize()
+	connectedText.Alignment = fyne.TextAlignLeading
+	connectedText.Hide()
+
 	toggleBtn := widget.NewButton("Stop", nil)
 	toggleBtn.Importance = widget.DangerImportance
 
 	resetBtn := widget.NewButton("Reset", nil)
 
-	topBar := container.NewBorder(nil, nil, nil,
-		container.NewHBox(resetBtn, toggleBtn),
-		statusLabel,
+	clearBtn := widget.NewButton("Clear", nil)
+
+	aboutBtn := widget.NewButton("About", nil)
+	aboutBtn.Importance = widget.LowImportance
+	aboutBtn.OnTapped = func() {
+		showAboutDialog(w)
+	}
+
+	topBar := container.NewBorder(nil, nil, aboutBtn,
+		container.NewHBox(resetBtn, clearBtn, toggleBtn),
+		container.NewStack(statusLabel, container.NewPadded(connectedText)),
 	)
 	connectorView := container.NewBorder(topBar, nil, nil, nil, logScroll)
 
@@ -89,16 +110,34 @@ func showConnectorView(a fyne.App, w fyne.Window, root *fyne.Container, cfg *con
 		exec := executor.New(workDir(cfg), true) // GUI always verbose
 		client = ws.New(cfg, exec)
 		running = true
+		connectedText.Hide()
+		statusLabel.Show()
 		statusLabel.SetText("Connecting to " + cfg.ServerURL + "...")
 		toggleBtn.SetText("Stop")
 		toggleBtn.Importance = widget.DangerImportance
 		toggleBtn.Refresh()
+
+		client.OnConnected = func() {
+			fyne.Do(func() {
+				statusLabel.Hide()
+				connectedText.Show()
+			})
+		}
+		client.OnDisconnected = func() {
+			fyne.Do(func() {
+				connectedText.Hide()
+				statusLabel.Show()
+				statusLabel.SetText("Connecting to " + cfg.ServerURL + "...")
+			})
+		}
 
 		go func() {
 			log.Printf("[evonet] Connecting to %s...", cfg.ServerURL)
 			client.Run()
 			fyne.Do(func() {
 				running = false
+				connectedText.Hide()
+				statusLabel.Show()
 				statusLabel.SetText("Stopped — click Start to reconnect")
 				toggleBtn.SetText("Start")
 				toggleBtn.Importance = widget.HighImportance
@@ -124,6 +163,10 @@ func showConnectorView(a fyne.App, w fyne.Window, root *fyne.Container, cfg *con
 		showPairingView(a, w, root, "")
 	}
 
+	clearBtn.OnTapped = func() {
+		lw.Clear()
+	}
+
 	w.SetOnClosed(func() {
 		if client != nil {
 			client.Stop()
@@ -132,6 +175,48 @@ func showConnectorView(a fyne.App, w fyne.Window, root *fyne.Container, cfg *con
 	})
 
 	startClient()
+}
+
+// showAboutDialog displays the About modal with app info, version, creator, and links.
+func showAboutDialog(w fyne.Window) {
+	xURL, _ := url.Parse("https://x.com/anvie")
+	ghURL, _ := url.Parse("https://github.com/anvie")
+
+	title := widget.NewLabelWithStyle("Evonet", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+
+	desc := widget.NewLabel(
+		"Evonic Cloud Home connector.\n" +
+			"Connects your device to an Evonic server via WebSocket,\n" +
+			"allowing AI agents to execute commands remotely\n" +
+			"without SSH or a public IP.",
+	)
+	desc.Alignment = fyne.TextAlignCenter
+	desc.Wrapping = fyne.TextWrapWord
+
+	version := widget.NewLabelWithStyle("Version 1.1.0 (GUI Mac)", fyne.TextAlignCenter, fyne.TextStyle{Italic: true})
+
+	separator := widget.NewSeparator()
+
+	creator := widget.NewLabelWithStyle("Created by Robin Syihab (@anvie)", fyne.TextAlignCenter, fyne.TextStyle{})
+
+	xLink := widget.NewHyperlink("X (Twitter): @anvie", xURL)
+	xLink.Alignment = fyne.TextAlignCenter
+
+	ghLink := widget.NewHyperlink("GitHub: github.com/anvie", ghURL)
+	ghLink.Alignment = fyne.TextAlignCenter
+
+	content := container.NewVBox(
+		title,
+		separator,
+		desc,
+		version,
+		separator,
+		creator,
+		xLink,
+		ghLink,
+	)
+
+	dialog.ShowCustom("About Evonet", "Close", container.NewPadded(content), w)
 }
 
 // showPairingView renders the pairing form into root. Must be called from main goroutine.
@@ -211,7 +296,7 @@ func doPair(serverURL, code string) (*config.Config, error) {
 		"pairing_code": code,
 		"device_name":  hostname,
 		"platform":     runtime.GOOS,
-		"version":      "1.0.0",
+		"version":      "1.1.0",
 	}
 	body, _ := json.Marshal(payload)
 

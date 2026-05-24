@@ -12,7 +12,7 @@ Usage:
         owner_type='agent', owner_id='agent-1',
         trigger_type='date',
         trigger_config={'run_date': '2026-04-21T09:00:00'},
-        action_type='agent_message',
+        action_type='static_message',
         action_config={'agent_id': 'agent-1', 'message': 'Time for standup!'},
     )
 
@@ -63,7 +63,30 @@ class Scheduler:
                                      EVENT_JOB_EXECUTED | EVENT_JOB_MISSED)
         self._scheduler.start()
         self._load_from_db()
+        # Built-in: nightly attachment cleanup (rows + files older than 7 days).
+        try:
+            self._scheduler.add_job(
+                self._cleanup_expired_attachments,
+                CronTrigger(hour=3, minute=0),
+                id='builtin:attachments_cleanup',
+                replace_existing=True,
+            )
+        except Exception as e:  # pragma: no cover - defensive guard
+            log.warning("Failed to register attachments cleanup job: %s", e)
         log.info("Started with %d jobs", len(self._scheduler.get_jobs()))
+
+    def _cleanup_expired_attachments(self):
+        """Daily housekeeping: delete attachment rows + files older than 7 days."""
+        try:
+            from models.db import db
+            deleted, freed = db.cleanup_expired_attachments(max_age_days=7)
+            if deleted:
+                log.info(
+                    "Attachments cleanup: deleted %d rows, freed %d bytes",
+                    deleted, freed,
+                )
+        except Exception as e:
+            log.error("Attachments cleanup failed: %s", e, exc_info=True)
 
     def shutdown(self):
         """Gracefully shut down the scheduler."""
@@ -161,6 +184,22 @@ class Scheduler:
             return False
         self._execute_action(schedule_id)
         return True
+
+    def cleanup_once_schedules(self) -> int:
+        """Cancel and delete all executed one-shot (date-triggered) schedules.
+
+        Returns the number of schedules cleaned up.
+        """
+        from models.db import db
+        schedules = db.get_schedules()
+        cleaned = 0
+        for s in schedules:
+            if s['trigger_type'] == 'date' and s['run_count'] > 0:
+                self.cancel_schedule(s['id'])
+                cleaned += 1
+        if cleaned:
+            log.info("Cleaned up %d executed once schedules", cleaned)
+        return cleaned
 
     # ------------------------------------------------------------------
     # Internal: Job registration
@@ -261,9 +300,13 @@ class Scheduler:
             if action_type == 'emit_event':
                 self._action_emit_event(action_config)
                 action_summary = f"Emitted event '{action_config.get('event_name', '?')}'"
-            elif action_type == 'agent_message':
-                self._action_agent_message(action_config)
+            elif action_type in ('static_message', 'agent_message'):
+                # agent_message is a deprecated alias for static_message
+                self._action_static_message(action_config)
                 action_summary = f"Sent message to agent '{action_config.get('agent_id', '?')}'"
+            elif action_type == 'session_prompt':
+                self._action_session_prompt(action_config)
+                action_summary = f"Sent prompt to agent '{action_config.get('agent_id', '?')}'"
             elif action_type == 'webhook':
                 status_code = self._action_webhook(action_config)
                 method = action_config.get('method', 'POST').upper()
@@ -322,14 +365,111 @@ class Scheduler:
         payload = config.get('payload', {})
         event_stream.emit(event_name, payload)
 
-    def _action_agent_message(self, config: dict):
+    def _action_static_message(self, config: dict):
+        """Deliver a pre-composed message directly to the user, bypassing the LLM.
+
+        This is the canonical name; the deprecated 'agent_message' maps here.
+        The message was already composed at schedule-creation time — we just
+        need to deliver it to the user's session (and push via channel).
+        """
         from backend.agent_runtime import agent_runtime
+        from backend.channels.registry import channel_manager
+        from models.db import db as main_db
+
         agent_id = config['agent_id']
         message = config['message']
         channel_id = config.get('channel_id')
+        external_user_id = config.get('external_user_id', '__scheduler__')
+
+        # If the schedule was created without proper routing (external_user_id
+        # defaults to '__scheduler__'), try to resolve the real human user from
+        # the agent's most recent active session.  This prevents reminders from
+        # landing in a ghost session where the user never sees them.
+        if external_user_id == '__scheduler__':
+            human_session = main_db.get_latest_human_session(agent_id)
+            if human_session:
+                external_user_id = human_session['external_user_id']
+                channel_id = channel_id or human_session.get('channel_id')
+                log.info(
+                    "Resolved static_message routing: agent=%s -> user=%s channel=%s",
+                    agent_id, external_user_id, channel_id or 'none',
+                )
+
+        # If we resolved a real user with a channel, deliver the message
+        # directly — bypass the LLM.  The message was already composed by the
+        # agent at schedule-creation time; re-running the LLM just risks the
+        # response getting lost in a system-user session (see #217 follow-up).
+        if external_user_id != '__scheduler__' and channel_id:
+            session_id = main_db.get_or_create_session(
+                agent_id, external_user_id, channel_id)
+            main_db.add_chat_message(
+                session_id, 'assistant', message, agent_id=agent_id)
+
+            # Push via channel (Telegram, etc.) so the user sees it immediately
+            instance = channel_manager._active.get(channel_id)
+            if instance and instance.is_running:
+                try:
+                    instance.send_message(external_user_id, message)
+                    log.info(
+                        "Delivered static_message directly: agent=%s user=%s "
+                        "session=%s", agent_id, external_user_id, session_id,
+                    )
+                except Exception as e:
+                    log.error(
+                        "Failed to send static_message via channel %s: %s",
+                        channel_id, e,
+                    )
+            return
+
+        # Fallback: no real user/channel resolved — use the old LLM path.
+        # The agent will process the message in a __scheduler__ session, but
+        # the response may not reach the user if no channel is associated.
+        log.warning(
+            "static_message falling back to handle_message (no real user "
+            "resolved): agent=%s external_user_id=%s channel_id=%s",
+            agent_id, external_user_id, channel_id or 'none',
+        )
         agent_runtime.handle_message(
             agent_id=agent_id,
-            external_user_id='__scheduler__',
+            external_user_id=external_user_id,
+            message=message,
+            channel_id=channel_id,
+        )
+
+    def _action_session_prompt(self, config: dict):
+        """Send a prompt that triggers full LLM processing via handle_message().
+
+        Unlike static_message which delivers a pre-composed message directly,
+        this routes the prompt through the agent's real user session so the LLM
+        processes it with full tool access.  Useful for scheduled tasks that
+        need to run code, query data, or make decisions at execution time.
+        """
+        from backend.agent_runtime import agent_runtime
+        from models.db import db as main_db
+
+        agent_id = config['agent_id']
+        message = config['message']
+        channel_id = config.get('channel_id')
+        external_user_id = config.get('external_user_id', '__scheduler__')
+
+        # Resolve the real human user session — same logic as static_message
+        if external_user_id == '__scheduler__':
+            human_session = main_db.get_latest_human_session(agent_id)
+            if human_session:
+                external_user_id = human_session['external_user_id']
+                channel_id = channel_id or human_session.get('channel_id')
+                log.info(
+                    "Resolved session_prompt routing: agent=%s -> user=%s channel=%s",
+                    agent_id, external_user_id, channel_id or 'none',
+                )
+
+        log.info(
+            "Dispatching session_prompt to handle_message: agent=%s user=%s",
+            agent_id, external_user_id,
+        )
+        agent_runtime.handle_message(
+            agent_id=agent_id,
+            external_user_id=external_user_id,
             message=message,
             channel_id=channel_id,
         )

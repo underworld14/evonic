@@ -1,0 +1,11 @@
+[filter]
+command = "^(grep|rg)\\b"
+description = "Compact grep/rg — matching lines only"
+strip_ansi = true
+replace = [
+    { pattern = "^[^:]+:", replacement = "" },
+]
+max_lines = 50
+head_lines = 40
+tail_lines = 10
+on_empty = "grep: no matches"

@@ -4,11 +4,12 @@ import base64
 import logging
 import os
 import re
+import secrets
 import subprocess
 import time
 import threading
 import requests
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from backend.channels.base import BaseChannel, strip_system_tags
 
 _logger = logging.getLogger(__name__)
@@ -53,6 +54,8 @@ class WhatsAppChannel(BaseChannel):
         self._approval_required_handler = None
         self._approval_resolved_handler = None
         self._llm_thinking_handler = None
+        # Per-channel secret for authenticating sidecar → server callbacks
+        self._callback_secret: str = secrets.token_urlsafe(32)
         # Maps external_user_id (bare number) → full WhatsApp JID for reliable replies
         self._jid_map: Dict[str, str] = {}
         # Debounce state for llm_thinking typing indicator
@@ -63,7 +66,7 @@ class WhatsAppChannel(BaseChannel):
     def get_channel_type() -> str:
         return 'whatsapp'
 
-    def get_system_instructions(self) -> str | None:
+    def get_system_instructions(self) -> Optional[str]:
         return (
             "IMPORTANT — WhatsApp Formatting Constraint:\n"
             "You are responding via WhatsApp which uses PLAIN TEXT only. "
@@ -189,6 +192,7 @@ class WhatsAppChannel(BaseChannel):
                 **os.environ,
                 'PORT': str(self._bridge_port),
                 'CALLBACK_URL': callback_url,
+                'CALLBACK_SECRET': self._callback_secret,
                 'AUTH_DIR': os.path.abspath(session_dir),
             }
 
@@ -288,9 +292,13 @@ class WhatsAppChannel(BaseChannel):
                         db.update_pending_user_id(pending['id'], sender)
                     approved_user = db.approve_pending_with_name_needed(pending['id'])
                     if approved_user:
-                        self._do_send(sender,
-                            "✅ You're now approved! Welcome aboard.\n\n"
-                            "Before we chat, please tell me your name (e.g. 'My name is Budi').")
+                        if db.needs_name(self.channel_id, sender):
+                            self._do_send(sender,
+                                "✅ You're now approved! Welcome aboard.\n\n"
+                                "Before we chat, please tell me your name (e.g. 'My name is Budi').")
+                        else:
+                            self._do_send(sender,
+                                "✅ You're now approved! Welcome aboard. How can I help you today?")
                     return
                 else:
                     self._do_send(sender,
