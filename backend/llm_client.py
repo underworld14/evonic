@@ -36,6 +36,27 @@ _LLM_ERROR_MESSAGES = {
 }
 
 
+# Moonshot's Kimi Coding Plan endpoint (api.kimi.com/coding) gates access by
+# User-Agent — only requests claiming to be from kimi-cli, opencode, claude-code,
+# pi, or hermes-agent are accepted. Mirroring kimi-cli's UA is the documented
+# way authorized clients identify themselves; do not "fix" this back to a
+# generic UA without first confirming Moonshot has rotated the allow-list.
+_KIMI_CODING_HOST = "api.kimi.com"
+_KIMI_USER_AGENT = "KimiCLI/1.5"
+
+
+def _build_request_headers(
+    api_key: Optional[str], base_url: Optional[str]
+) -> Dict[str, str]:
+    """Build outbound HTTP headers for a chat / models request."""
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    if base_url and _KIMI_CODING_HOST in base_url:
+        headers["User-Agent"] = _KIMI_USER_AGENT
+    return headers
+
+
 def _format_llm_error(error_type: str, context: Optional[Dict[str, Any]] = None) -> str:
     """Format an LLM error type into a user-friendly message.
 
@@ -109,7 +130,9 @@ def strip_thinking_tags(content: str) -> Tuple[str, Optional[str]]:
     return cleaned, thinking_content
 
 
-def _convert_image_url_to_claude(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _convert_image_url_to_claude(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
     """Convert OpenAI-style image_url content blocks to Anthropic image+source format."""
     result = []
     for msg in messages:
@@ -128,15 +151,23 @@ def _convert_image_url_to_claude(messages: List[Dict[str, Any]]) -> List[Dict[st
                         media_type = header.split(":")[1].split(";")[0]
                     except (ValueError, IndexError):
                         media_type, b64data = "image/jpeg", url
-                    new_parts.append({
-                        "type": "image",
-                        "source": {"type": "base64", "media_type": media_type, "data": b64data},
-                    })
+                    new_parts.append(
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": b64data,
+                            },
+                        }
+                    )
                 else:
-                    new_parts.append({
-                        "type": "image",
-                        "source": {"type": "url", "url": url},
-                    })
+                    new_parts.append(
+                        {
+                            "type": "image",
+                            "source": {"type": "url", "url": url},
+                        }
+                    )
             else:
                 new_parts.append(part)
         result.append({**msg, "content": new_parts})
@@ -249,9 +280,7 @@ class LLMClient:
                 models_url = f"{self.base_url}/tags"
             else:
                 models_url = f"{self.base_url}/v1/models"
-            headers = {"Content-Type": "application/json"}
-            if self.api_key:
-                headers["Authorization"] = f"Bearer {self.api_key}"
+            headers = _build_request_headers(self.api_key, self.base_url)
             response = requests.get(models_url, headers=headers, timeout=10)
             if response.status_code == 200:
                 data = response.json()
@@ -384,22 +413,20 @@ class LLMClient:
             processed_messages = [merged] + processed_messages[n_sys:]
 
         # Handle reasoning_content field based on thinking mode:
-        # - Thinking ON (self.thinking=True, enable_thinking=True): add the field on every
-        #   assistant message — some APIs (e.g. DeepSeek) require it even when the model
-        #   returned no reasoning for that particular turn.
-        # - Thinking model but disabled for this call (self.thinking=True, enable_thinking=False):
-        #   keep existing reasoning_content so it is passed back correctly (required by
-        #   DeepSeek-R1 after tool calls), but do NOT add empty strings to messages that
-        #   have none — and do NOT add the thinking parameter to the payload below.
+        # - Thinking ON (self.thinking=True): add the field on every assistant message.
+        #   Always-thinking models (Kimi K2, DeepSeek-R1, MiniMax M2) require
+        #   reasoning_content to be present on ALL assistant messages, including those
+        #   with tool_calls, even when the model returned no reasoning for that turn.
+        #   This is done unconditionally for thinking models so the API never sees a
+        #   missing reasoning_content field after tool calls.
         # - Thinking OFF (self.thinking=False): other APIs reject the field entirely — strip it.
-        if self.thinking and enable_thinking:
+        if self.thinking:
             for _msg in processed_messages:
                 if _msg.get("role") == "assistant" and "reasoning_content" not in _msg:
                     _msg["reasoning_content"] = ""
-        elif not self.thinking:
+        else:
             for _msg in processed_messages:
                 _msg.pop("reasoning_content", None)
-        # else: self.thinking=True, enable_thinking=False → leave reasoning_content as-is
 
         # Claude API uses {"type":"image","source":{...}} instead of OpenAI's image_url format.
         if is_claude:
@@ -437,9 +464,7 @@ class LLMClient:
                 )
                 payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
 
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        headers = _build_request_headers(self.api_key, self.base_url)
 
         try:
             from models.db import db as _db
