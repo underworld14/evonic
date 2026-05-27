@@ -206,6 +206,12 @@ AGENT_MAX_TOOL_RESULT_CHARS = _get_env_int("AGENT_MAX_TOOL_RESULT_CHARS", 8000, 
 TOOL_COMPRESSION_ENABLED = _get_env_bool("RTK_NO_COMPRESS", False, invert=True)
 TOOL_COMPRESSION_VERBOSE = _get_env_bool("RTK_VERBOSE", False)
 
+# Long-running command guard -- True unless LR_GUARD_DISABLED=1 (env var force-disables)
+# When disabled, build/compile commands (make, cargo, npm build, etc.) run directly
+# without the tmux/screen wrapper. The DB setting long_running_guard_enabled can also
+# override this at runtime via the system settings UI.
+LONG_RUNNING_GUARD_ENABLED = _get_env_bool("LR_GUARD_DISABLED", False, invert=True)
+
 AGENT_MAX_SUMMARIZE_BATCH = _get_env_int("AGENT_MAX_SUMMARIZE_BATCH", 20, min_val=1, max_val=500)
 AGENT_TIMEOUT_RETRIES = _get_env_int("AGENT_TIMEOUT_RETRIES", 2, min_val=0, max_val=20)
 AGENT_QUEUE_WORKERS = _get_env_int("AGENT_QUEUE_WORKERS", 5, min_val=1, max_val=32)

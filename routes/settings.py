@@ -489,6 +489,16 @@ def api_public_history():
     return jsonify({'enabled': val == '1'})
 
 
+@settings_bp.route('/api/settings/long-running-guard', methods=['PUT'])
+def api_long_running_guard():
+    """Toggle the long-running command guard (detect build/compile commands)."""
+    from models.db import db
+    data = request.get_json()
+    enabled = '1' if data.get('enabled', True) else '0'
+    db.set_setting('long_running_guard_enabled', enabled)
+    return jsonify({'success': True, 'enabled': enabled == '1'})
+
+
 @settings_bp.route('/api/settings/agent-timeout-retries', methods=['GET', 'PUT'])
 def api_agent_timeout_retries():
     """Get or set the number of auto-retries when LLM times out during chat."""
@@ -689,6 +699,8 @@ def api_get_general_settings():
     """Return all general-tab settings in a single response."""
     return jsonify({
         'public_history': db.get_setting('public_history', '0') == '1',
+        'long_running_guard_enabled': db.get_setting('long_running_guard_enabled',
+                                                     '1' if config.LONG_RUNNING_GUARD_ENABLED else '0') == '1',
         'agent_timeout_retries': int(db.get_setting('agent_timeout_retries', str(config.AGENT_TIMEOUT_RETRIES))),
         'llm_max_retries': int(db.get_setting('llm_max_retries', '5')),
         'max_concurrent_llm_per_agent': int(db.get_setting('max_concurrent_llm_per_agent', '1')),
@@ -809,6 +821,15 @@ def api_batch_save():
             theme = 'system'
         db.set_setting('theme', theme)
         results['theme'] = theme
+
+    # Long-Running Command Guard
+    if 'long_running_guard_enabled' in settings:
+        try:
+            enabled = '1' if settings['long_running_guard_enabled'] else '0'
+            db.set_setting('long_running_guard_enabled', enabled)
+            results['long_running_guard_enabled'] = enabled == '1'
+        except (ValueError, TypeError) as e:
+            errors.append(f'long_running_guard_enabled: {e}')
 
     # Default Model
     if 'default_model_id' in settings:

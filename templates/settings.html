@@ -165,6 +165,24 @@ block content %}
                 onchange='togglePublicHistory(this.checked)',
                 extra_class='flex-shrink-0 ml-4') }}
             </div>
+            <!-- Long-Running Command Detection -->
+            <div
+                class="flex items-center justify-between p-4 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600"
+            >
+                <div>
+                    <div class="font-medium text-gray-800 dark:text-gray-100">
+                        Long-Running Command Detection
+                    </div>
+                    <div class="text-sm text-gray-500 mt-0.5">
+                        Detect and block build/compile commands (make, cargo,
+                        npm build, etc.) that may exceed the bash timeout.
+                        When disabled, all commands run directly.
+                    </div>
+                </div>
+                {{ toggle(id='long-running-guard-toggle',
+                onchange='toggleLongRunningGuard(this.checked)',
+                extra_class='flex-shrink-0 ml-4') }}
+            </div>
             <!-- Max Tool Iterations -->
             <div
                 class="flex items-center justify-between p-4 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600"
@@ -1542,6 +1560,7 @@ block content %}
             return;
         }
         document.getElementById("public-history-toggle").checked = s.public_history;
+        document.getElementById("long-running-guard-toggle").checked = s.long_running_guard_enabled;
         document.getElementById("agent-timeout-retries-input").value = s.agent_timeout_retries;
         document.getElementById("llm-max-retries-input").value = s.llm_max_retries;
         document.getElementById("max-concurrent-per-agent-input").value = s.max_concurrent_llm_per_agent;
@@ -1555,6 +1574,10 @@ block content %}
 
     async function togglePublicHistory(enabled) {
         await apiPut("/api/settings/public-history", { enabled });
+    }
+
+    async function toggleLongRunningGuard(enabled) {
+        await apiPut("/api/settings/long-running-guard", { enabled });
     }
 
     function updateThemeButtons(theme) {

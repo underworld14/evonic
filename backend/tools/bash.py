@@ -21,6 +21,24 @@ except ImportError:
     should_skip_safety = lambda agent: True
 
 
+def _get_long_running_setting() -> bool:
+    """Check whether the long-running command guard is enabled.
+
+    Priority: env var LR_GUARD_DISABLED=1 force-disables it (config.py).
+    Otherwise, falls back to the 'long_running_guard_enabled' DB setting
+    (defaults to '1' = enabled).
+    """
+    import config as _cfg
+    if not _cfg.LONG_RUNNING_GUARD_ENABLED:
+        return False
+    try:
+        from models.db import db
+        val = db.get_setting('long_running_guard_enabled', '1')
+        return val == '1'
+    except Exception:
+        return True
+
+
 def execute(agent: dict, args: dict) -> dict:
     action = args.get('action', 'run')
     session_id = (agent or {}).get('session_id') or 'default'
@@ -42,10 +60,17 @@ def execute(agent: dict, args: dict) -> dict:
 
     # ------------------------------------------------------------------
     # Long-running command guard (detect build commands, suggest tmux/screen)
+    # Can be disabled globally via LR_GUARD_DISABLED=1 env var or the
+    # long_running_guard_enabled DB setting (toggled in System > Settings UI).
     # ------------------------------------------------------------------
     from backend.tools.lib.long_running_guard import check_long_running
 
-    lr = check_long_running(script)
+    _guard_enabled = _get_long_running_setting()
+    if not _guard_enabled:
+        lr = None
+    else:
+        lr = check_long_running(script)
+
     if lr:
         return {
             'error': (
