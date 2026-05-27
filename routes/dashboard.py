@@ -225,6 +225,8 @@ def api_dashboard_sidebar():
     agents = [a for a in agents if a.get('enabled')]
     # Sort by last_active_at descending, nulls last
     agents.sort(key=lambda a: (a.get('last_active_at') or ''), reverse=True)
+    # Limit sidebar to max 15 agents
+    agents = agents[:15]
 
     busy_agents = agent_runtime.get_busy_agents()
     for agent in agents:
