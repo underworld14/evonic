@@ -1889,6 +1889,12 @@ def pass_setup():
         print("Password set successfully.")
     else:
         print("Admin password is already configured.")
+        # Rebind stdin to /dev/tty so input() works when called via
+        # the evonic wrapper script (which pipes code through a heredoc).
+        try:
+            sys.stdin = open("/dev/tty", "r")
+        except OSError:
+            pass
         try:
             choice = input("Change password? [y/N]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
