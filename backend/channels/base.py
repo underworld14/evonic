@@ -106,6 +106,18 @@ class BaseChannel(ABC):
         """Actual delivery implementation — subclasses must implement this."""
         pass
 
+    def send_file(self, external_user_id: str, file_path: str,
+                  caption: str | None = None,
+                  mime_type: str | None = None) -> bool:
+        """Send a file to a user. Returns True on success, False on failure."""
+        return self._do_send_file(external_user_id, file_path, caption, mime_type)
+
+    def _do_send_file(self, external_user_id: str, file_path: str,
+                      caption: str | None = None,
+                      mime_type: str | None = None) -> bool:
+        """Actual file delivery — override in subclass. Returns False by default."""
+        return False
+
     def send_typing(self, external_user_id: str):
         """Send a typing indicator to a user. Optional — no-op by default."""
         pass

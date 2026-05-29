@@ -8,6 +8,7 @@ llm_loop, and summarizer.
 from __future__ import annotations
 
 import logging
+import mimetypes
 import os
 import signal
 import sys
@@ -1904,6 +1905,82 @@ class AgentRuntime:
                     instance.send_message(session['external_user_id'], text)
                 except Exception as e:
                     _logger.error("send_as_bot channel error: %s", e)
+        return True
+
+    def send_file_as_bot(self, session_id: str, file_path: str,
+                         caption: str | None = None,
+                         mime_type: str | None = None) -> bool:
+        """Send a file via channel and record it as a chat entry + attachment."""
+        session = db.get_session_with_details(session_id)
+        if not session:
+            return False
+        agent_id = session['agent_id']
+        external_user_id = session['external_user_id']
+        channel_id = session.get('channel_id')
+        channel_type = session.get('channel_type')
+
+        # Send via channel if available
+        channel_ok = True
+        if channel_id:
+            instance = channel_manager._active.get(channel_id)
+            if instance and instance.is_running:
+                try:
+                    channel_ok = instance.send_file(external_user_id, file_path, caption, mime_type)
+                except Exception as e:
+                    _logger.error("send_file_as_bot channel error: %s", e)
+                    channel_ok = False
+
+        if not channel_ok:
+            return False
+
+        filename = os.path.basename(file_path)
+        guessed_mime = mime_type or mimetypes.guess_type(file_path)[0] or 'application/octet-stream'
+        size_bytes = os.path.getsize(file_path)
+        is_image = guessed_mime.startswith('image/') if guessed_mime else False
+
+        # 1. Save attachment record
+        attachment_id = db.save_attachment(
+            agent_id=agent_id,
+            session_id=session_id,
+            filename=filename,
+            file_path=file_path,
+            external_user_id=external_user_id,
+            channel_id=channel_id,
+            channel_type=channel_type or '',
+            original_filename=filename,
+            mime_type=guessed_mime,
+            file_type='document',
+            size_bytes=size_bytes,
+        )
+
+        # 2. Build attachment_info metadata for the chat entry
+        attachment_info = {
+            'attachment_id': attachment_id,
+            'filename': filename,
+            'mime_type': guessed_mime,
+            'size_bytes': size_bytes,
+            'is_image': is_image,
+        }
+
+        # 3. Write chat entry
+        if caption:
+            content = f"{caption}\n[File: {filename}]"
+        else:
+            content = f"[File: {filename}]"
+
+        chatlog = chatlog_manager.get(agent_id, session_id)
+        chatlog.append({
+            'type': 'user',
+            'session_id': session_id,
+            'content': content,
+            'metadata': {'attachment_info': attachment_info, 'channel': channel_type},
+        })
+
+        # Also persist in main chat messages table
+        db.add_chat_message(session_id, 'assistant', content,
+                            agent_id=agent_id,
+                            metadata={'attachment_info': attachment_info})
+
         return True
 
     def send_as_user(self, session_id: str, text: str,

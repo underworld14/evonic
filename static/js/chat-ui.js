@@ -518,6 +518,12 @@ function buildMessageBubble(role, content, opts = {}, cfg = {}) {
         formatTimestamp = null,
     } = cfg;
 
+    // Check for attachment metadata — render attachment card regardless of role
+    const attachmentInfo = opts.metadata && opts.metadata.attachment_info;
+    if (attachmentInfo) {
+        return buildAttachmentCard(attachmentInfo, role, content, cfg);
+    }
+
     const isUser      = role === 'user';
     const isError     = role === 'error';
     const isSystem    = !isUser && !isError && role !== 'assistant' && /^\[system/i.test(content);
@@ -596,6 +602,70 @@ function buildMessageBubble(role, content, opts = {}, cfg = {}) {
         }
     }
 
+    $wrapper.append($inner);
+    return $wrapper;
+}
+
+function buildAttachmentCard(info, role, content, cfg) {
+    const {
+        userAlign = 'right',
+        assistantAlign = 'left',
+        agentAvatarUrl = null,
+    } = cfg;
+
+    const isUser = role === 'user';
+    const isRight = isUser ? (userAlign === 'right') : (assistantAlign === 'right');
+    const alignClass = isRight
+        ? 'items-end md:items-start md:justify-end'
+        : 'items-start md:justify-start';
+
+    const avatarHtml = (!isUser && agentAvatarUrl)
+        ? '<img src="' + escape(agentAvatarUrl) + '" alt="" class="w-7 h-7 rounded-full object-cover flex-shrink-0 mt-1 bg-indigo-50 dark:bg-indigo-900/20" onerror="this.onerror=null;this.style.display=\'none\'">'
+        : '';
+
+    const $wrapper = $('<div>').addClass('flex flex-col md:flex-row').addClass(alignClass).attr('data-msg-role', role);
+    if (avatarHtml) $wrapper.addClass('items-start gap-2').append($(avatarHtml));
+
+    // Format file size
+    const bytes = info.size_bytes || 0;
+    let sizeStr = '';
+    if (bytes < 1024) {
+        sizeStr = bytes + ' B';
+    } else if (bytes < 1048576) {
+        sizeStr = (bytes / 1024).toFixed(1) + ' KB';
+    } else {
+        sizeStr = (bytes / 1048576).toFixed(1) + ' MB';
+    }
+
+    // Paperclip SVG icon
+    var paperclipSvg = '<svg class="w-4 h-4 flex-shrink-0 text-gray-400 dark:text-gray-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>';
+
+    // Download link SVG
+    var downloadSvg = '<svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+
+    // Has download? (attachment_id present)
+    var hasDownload = info.attachment_id != null;
+
+    // Build card HTML
+    var cardHtml = '<div class="rounded-2xl border px-4 py-2.5 text-sm flex items-center gap-2 bg-gray-100 dark:bg-gray-800 border-gray-200 dark:border-gray-700">';
+    cardHtml += paperclipSvg;
+    cardHtml += '<span class="truncate max-w-[200px] text-gray-800 dark:text-gray-200">' + escape(info.filename || 'file') + '</span>';
+    cardHtml += '<span class="text-gray-400 dark:text-gray-500 text-xs whitespace-nowrap">(' + sizeStr + ')</span>';
+    if (hasDownload) {
+        cardHtml += '<a href="/api/attachments/' + info.attachment_id + '/download" download="' + escape(info.filename || 'file') + '" class="text-indigo-500 hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300 ml-auto flex-shrink-0" title="Download">' + downloadSvg + '</a>';
+    } else {
+        cardHtml += '<span class="text-gray-400 dark:text-gray-500 text-xs ml-auto flex-shrink-0 italic">[File unavailable]</span>';
+    }
+    cardHtml += '</div>';
+
+    var $card = $(cardHtml);
+    var $inner = $('<div class="max-w-[80%] min-w-0">');
+    var fileMarker = /^\[File:\s*[^\]]+\]$/m;
+    var captionText = content ? content.replace(fileMarker, '').trim() : '';
+    if (captionText) {
+        $inner.append($('<div class="text-sm text-gray-700 dark:text-gray-300 mb-2 break-words">').text(captionText));
+    }
+    $inner.append($card);
     $wrapper.append($inner);
     return $wrapper;
 }

@@ -7,7 +7,7 @@ import re
 import threading
 import time
 
-from flask import Blueprint, render_template, jsonify, request
+from flask import Blueprint, render_template, jsonify, request, send_file
 
 from models.db import db
 
@@ -314,3 +314,25 @@ def api_clear_all_attachments():
     agents and sessions, without touching chat sessions/messages."""
     deleted, freed = db.delete_all_attachments()
     return jsonify({'success': True, 'deleted': deleted, 'freed_bytes': freed})
+
+
+@sessions_bp.route('/api/attachments/<int:attachment_id>/download')
+def api_attachment_download(attachment_id):
+    """Serve an attachment file as a downloadable file."""
+    attachment = db.get_attachment(attachment_id)
+    if not attachment:
+        return jsonify({'error': 'Attachment not found'}), 404
+
+    file_path = attachment.get('file_path', '')
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({'error': 'File unavailable'}), 404
+
+    original_filename = attachment.get('original_filename') or os.path.basename(file_path)
+    mime_type = attachment.get('mime_type') or 'application/octet-stream'
+
+    return send_file(
+        file_path,
+        mimetype=mime_type,
+        as_attachment=True,
+        download_name=original_filename,
+    )
