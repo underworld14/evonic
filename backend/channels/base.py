@@ -5,7 +5,7 @@ import time
 import threading
 from abc import ABC, abstractmethod
 from threading import Timer
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 
 _SYSTEM_TAG_RE = re.compile(r'\[(?:SYSTEM(?:/[^\]]*)?|System/[^\]]*)\]\s*')
 
@@ -107,14 +107,14 @@ class BaseChannel(ABC):
         pass
 
     def send_file(self, external_user_id: str, file_path: str,
-                  caption: str | None = None,
-                  mime_type: str | None = None) -> bool:
+                  caption: Optional[str] = None,
+                  mime_type: Optional[str] = None) -> bool:
         """Send a file to a user. Returns True on success, False on failure."""
         return self._do_send_file(external_user_id, file_path, caption, mime_type)
 
     def _do_send_file(self, external_user_id: str, file_path: str,
-                      caption: str | None = None,
-                      mime_type: str | None = None) -> bool:
+                      caption: Optional[str] = None,
+                      mime_type: Optional[str] = None) -> bool:
         """Actual file delivery — override in subclass. Returns False by default."""
         return False
 

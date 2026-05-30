@@ -14,7 +14,7 @@ import os
 import sqlite3
 import requests as http_lib
 from contextlib import contextmanager
-from typing import Generator
+from typing import Generator, Optional
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -58,8 +58,8 @@ class PluginSDK:
 
     def send_file(self, agent_id: str, external_user_id: str,
                   channel_id: str, file_path: str,
-                  caption: str | None = None,
-                  mime_type: str | None = None) -> dict:
+                  caption: Optional[str] = None,
+                  mime_type: Optional[str] = None) -> dict:
         """Send a file to a user via an agent session on a specific channel.
 
         channel_id can be either:
