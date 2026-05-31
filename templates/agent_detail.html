@@ -427,7 +427,7 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
                             {{ toggle_widget(id='agent-message-wrapper', checked=(agent.message_wrapper_enabled is none or agent.message_wrapper_enabled)) }}
                             <div>
                                 <span class="text-gray-600 dark:text-gray-300 text-sm font-medium">Message Wrapper</span>
-                                <p class="text-xs text-gray-400 mt-0.5">Prepend a capture prefix to every user message, prompting this agent to scan for and store user preferences, instructions, and personal facts. Overrides the global setting.</p>
+                                <p class="text-xs text-gray-400 mt-0.5">When enabled, this agent scans each incoming user message for preferences, instructions, and personal facts before responding. Recommended for personal assistant agents. Disable for agents that do not need to retain context (e.g., computation-only agents). This overrides the global default.</p>
                             </div>
                         </label>
                     </div>

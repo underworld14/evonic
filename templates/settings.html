@@ -192,10 +192,12 @@ block content %}
                         Message Wrapper
                     </div>
                     <div class="text-sm text-gray-500 mt-0.5">
-                        Prepend a capture prefix to every user message,
-                        prompting agents to scan for and store user preferences,
-                        instructions, and personal facts. Disable per-agent in
-                        the agent's Advanced Settings.
+                        When enabled, a brief instruction is prepended to each user
+                        message, prompting agents to scan that single message for
+                        preferences, instructions, and personal facts before
+                        replying. This helps agents learn about you incrementally.
+                        Recommended for personal assistant agents. Can be
+                        overridden per-agent in Advanced Settings.
                     </div>
                 </div>
                 {{ toggle(id='message-wrapper-toggle',
