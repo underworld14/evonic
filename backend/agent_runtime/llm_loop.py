@@ -719,7 +719,18 @@ def run_tool_loop(agent: Dict[str, Any],
             # atypical error codes that the client misclassifies.  One server-side
             # retry with a 2-second pause catches these false negatives without
             # adding meaningful latency to genuinely terminal errors.
-            if error_type in ('llm_error', 'unknown_error') and timeout_retries < 1:
+            #
+            # EXCEPTION: skip the retry for context-exceeded errors.  Those need
+            # to fall through to the compaction logic below — a blind retry would
+            # just fail again with the same error, and the compaction/recovery
+            # machinery never gets a chance to run.
+            _ctx_err_detail = (result.get('error_detail') or '').lower()
+            _ctx_is_exceeded = (
+                'context length' in _ctx_err_detail or 'context size' in _ctx_err_detail
+                or 'exceed_context' in _ctx_err_detail or 'exceeds the available context' in _ctx_err_detail
+            )
+            if (error_type in ('llm_error', 'unknown_error') and timeout_retries < 1
+                    and not _ctx_is_exceeded):
                 timeout_retries += 1
                 _logger.warning(
                     "%s -- single retry for llm/unknown error before fallback", error_type)

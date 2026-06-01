@@ -384,7 +384,11 @@ class TestContextSizeCompaction(unittest.TestCase):
             _err('exceeds the available context size'),
             {'success': False, 'error_type': 'api_error', 'error_detail': 'timeout', 'response': {}},
         ]
-        messages = _make_messages(with_summary=False, n_conv=5)
+        # Use n_conv=3 (6 conversation messages) so that the dumb-truncation
+        # safety net in Fix 3 is a no-op (_keep_n=6, 6 > 6 is False).
+        # Otherwise dumb-truncation would fire after compaction failure,
+        # issue a 3rd chat_completion call, and exhaust the mock's side_effect.
+        messages = _make_messages(with_summary=False, n_conv=3)
         (result, _, _), _ = self._run_tool_loop(llm, messages, 'sess4')
         self.assertTrue(result.get('error'))
         self.assertIn('too long', result.get('text', '').lower())
