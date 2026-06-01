@@ -580,11 +580,11 @@ class AgentChatDB:
             conn.commit()
             return True
 
-    def archive_sessions_by_agent_id(self, agent_id: str) -> int:
+    def archive_sessions_by_agent_id(self, agent_id: str) -> tuple[int, list[str]]:
         """Archive all non-archived sessions whose agent_id matches.
 
         Used to clean up sub-agent sessions when the sub-agent is destroyed.
-        Returns the number of sessions archived.
+        Returns a tuple of (count_archived, list_of_session_ids).
         """
         with self._connect() as conn:
             cursor = conn.cursor()
@@ -599,7 +599,7 @@ class AgentChatDB:
                     "UPDATE chat_sessions SET archived = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                     (sid,))
             conn.commit()
-            return len(session_ids)
+            return len(session_ids), session_ids
 
     def has_session(self, session_id: str) -> bool:
         with self._connect() as conn:

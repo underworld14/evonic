@@ -289,7 +289,7 @@ class ChatDelegationMixin:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     session_id,
-                    session.get('agent_id', agent_id),
+                    agent_id,
                     session.get('external_user_id', ''),
                     session.get('channel_id'),
                     session.get('bot_enabled', 1),

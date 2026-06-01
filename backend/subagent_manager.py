@@ -134,10 +134,17 @@ class SubAgentManager:
             # Archive sessions in parent's DB so they disappear from the sessions page
             try:
                 from models.chat import agent_chat_manager
+                from models.db import db as main_db
                 chat_db = agent_chat_manager.get(sub.parent_id)
-                archived = chat_db.archive_sessions_by_agent_id(sub_agent_id)
+                archived, session_ids = chat_db.archive_sessions_by_agent_id(sub_agent_id)
                 if archived:
                     _logger.info("Archived %d session(s) for sub-agent %s", archived, sub_agent_id)
+                    # Also remove from session_index so they stop appearing in the sessions page
+                    for sid in session_ids:
+                        try:
+                            main_db._remove_session_index(sid)
+                        except Exception:
+                            pass
             except Exception as e:
                 _logger.warning("Failed to archive sessions for sub-agent %s: %s", sub_agent_id, e)
             # Clean up the sub-agent's temp chat DB directory
