@@ -1620,6 +1620,10 @@ class AgentRuntime:
                         # so the agent can start a new plan cycle for this task
                         # instead of being stuck in a stale plan from a previous task.
                         ms = AgentState()
+            # Sub-agents receive delegated tasks from their parent and
+            # should never require plan/approval cycles. Force execute mode.
+            if agent.get('is_subagent'):
+                ms = AgentState(mode="execute", auto_trivial=True)
             agent_context['agent_state'] = ms
 
         # Apply preference wrapper prefix to user messages if enabled
