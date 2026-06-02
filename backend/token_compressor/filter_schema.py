@@ -24,7 +24,11 @@ Usage:
 from __future__ import annotations
 
 import re
-import tomllib
+
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Sequence
