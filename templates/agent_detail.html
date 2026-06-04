@@ -674,7 +674,24 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
                     <button onclick="retryWorkplaceConnect()" class="ml-auto text-xs text-yellow-700 dark:text-yellow-400 hover:underline flex-shrink-0">Retry</button>
                 </div>
                 <div class="p-4 border-t border-gray-200 dark:border-gray-700 flex-shrink-0">
+                    <!-- File preview strip -->
+                    <div id="chat-file-preview" class="hidden mb-2 flex items-center gap-2 px-2 py-1.5 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                        <img id="chat-file-preview-img" class="hidden w-12 h-12 object-cover rounded" alt="">
+                        <svg id="chat-file-preview-icon" class="hidden w-6 h-6 text-gray-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 2l5 5h-5V4zm-3 9h4v2h-4v-2zm0 3h4v2h-4v-2zm-2-3h1v2H8v-2zm0 3h1v2H8v-2z"/></svg>
+                        <span id="chat-file-preview-name" class="text-xs text-gray-600 dark:text-gray-300 truncate flex-1"></span>
+                        <span id="chat-file-preview-size" class="text-[10px] text-gray-400 flex-shrink-0"></span>
+                        <button type="button" onclick="clearChatFileInput()" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 flex-shrink-0" title="Remove file">
+                            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16ZM8.28 7.22a.75.75 0 0 0-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 1 0 1.06 1.06L10 11.06l1.72 1.72a.75.75 0 1 0 1.06-1.06L11.06 10l1.72-1.72a.75.75 0 0 0-1.06-1.06L10 8.94 8.28 7.22Z" clip-rule="evenodd"/></svg>
+                        </button>
+                    </div>
                     <div class="flex gap-2">
+                        <input type="file" id="chat-file-input" class="hidden"
+                               accept="image/*,.pdf,.txt,.md,.log,.json,.yaml,.yml,.xml,.csv,.tsv,.py,.js,.ts,.tsx,.jsx,.java,.go,.rs,.c,.cpp,.h,.rb,.php,.html,.css,.sql,.sh,.toml,.ini"
+                               onchange="onChatFileSelected(this)">
+                        <button type="button" id="chat-attach-btn" onclick="document.getElementById('chat-file-input').click()"
+                                class="p-2.5 text-gray-400 hover:text-indigo-500 transition-colors flex-shrink-0" title="Attach file">
+                            <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                        </button>
                         <textarea id="chat-input" placeholder="Type a message..." rows="1"
                             class="flex-1 p-2.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 resize-none overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed"
                             style="max-height: 150px;"
@@ -3050,6 +3067,43 @@ function handleChatBtn() {
     sendChat();
 }
 
+// ==================== File Upload Helpers ====================
+
+function onChatFileSelected(input) {
+    const file = input.files[0];
+    const preview = document.getElementById('chat-file-preview');
+    if (!file) { preview.classList.add('hidden'); return; }
+
+    const previewImg = document.getElementById('chat-file-preview-img');
+    const previewIcon = document.getElementById('chat-file-preview-icon');
+    const previewName = document.getElementById('chat-file-preview-name');
+    const previewSize = document.getElementById('chat-file-preview-size');
+
+    previewName.textContent = file.name;
+    previewSize.textContent = file.size < 1024 ? `${file.size} B`
+        : file.size < 1048576 ? `${(file.size / 1024).toFixed(1)} KB`
+        : `${(file.size / 1048576).toFixed(1)} MB`;
+
+    if (file.type.startsWith('image/')) {
+        previewImg.src = URL.createObjectURL(file);
+        previewImg.classList.remove('hidden');
+        previewIcon.classList.add('hidden');
+    } else {
+        previewImg.classList.add('hidden');
+        previewIcon.classList.remove('hidden');
+    }
+    preview.classList.remove('hidden');
+}
+
+function clearChatFileInput() {
+    const input = document.getElementById('chat-file-input');
+    input.value = '';
+    const preview = document.getElementById('chat-file-preview');
+    preview.classList.add('hidden');
+    const previewImg = document.getElementById('chat-file-preview-img');
+    if (previewImg.src) { URL.revokeObjectURL(previewImg.src); previewImg.src = ''; }
+}
+
 function stopChat() {
     _destroyCurrentTurn();
     if (chatPollTimer) {
@@ -3063,11 +3117,23 @@ function stopChat() {
 async function sendChat() {
     const input = document.getElementById('chat-input');
     const msg = input.value.trim();
-    if (!msg) return;
+    const fileInput = document.getElementById('chat-file-input');
+    const file = fileInput.files[0] || null;
+    if (!msg && !file) return;
     input.value = '';
     input.style.height = 'auto';
     window._clearChatDraft();
-    chatUI.appendMessage('user', msg);
+
+    // Build optimistic metadata for image/file preview
+    let optimisticMeta = null;
+    if (file && file.type.startsWith('image/')) {
+        optimisticMeta = {image_url: URL.createObjectURL(file), _blob_url: true};
+    } else if (file) {
+        optimisticMeta = {attachment_info: {filename: file.name, mime_type: file.type, is_image: false}};
+    }
+    const displayText = msg || (file ? (file.type.startsWith('image/') ? '' : `[File: ${file.name}]`) : '');
+
+    const $msgEl = chatUI.appendMessage('user', displayText, {metadata: optimisticMeta});
     // Capture the user message wrapper for anchoring the thinking bubble
     const container = document.getElementById('chat-messages');
     const userWrappers = container ? container.querySelectorAll('[data-msg-role="user"]') : [];
@@ -3075,21 +3141,35 @@ async function sendChat() {
     chatUI.scrollToBottom();
     setChatBusy(true);
 
+    // Build fetch options based on whether we have a file
+    let fetchOpts;
+    if (file) {
+        const formData = new FormData();
+        formData.append('message', msg);
+        formData.append('user_id', 'web_test');
+        formData.append('file', file);
+        fetchOpts = { method: 'POST', body: formData };
+    } else {
+        fetchOpts = {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({message: msg, user_id: 'web_test'}),
+        };
+    }
+
     // If an SSE stream is already active, the agent is mid-turn — inject the message
     if (chatUI.hasActiveStream()) {
         try {
-            const res = await fetch(`/api/agents/${AGENT_ID}/chat`, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({message: msg, user_id: 'web_test'}),
-            });
+            const res = await fetch(`/api/agents/${AGENT_ID}/chat`, fetchOpts);
             const data = await res.json();
             if (data.injected) {
                 chatUI.markLastUserBubbleQueued();
                 setChatBusy(false);
+                if (file) clearChatFileInput();
                 return;
             }
             if (!data.success) {
+                $msgEl.remove();
                 chatUI.appendMessage('error', 'Error: ' + (data.error || 'Unknown error'));
             } else {
                 const $resp = chatUI.appendMessage('assistant', data.response);
@@ -3100,9 +3180,11 @@ async function sendChat() {
                 await syncLastChatTs();
             }
         } catch(e) {
+            $msgEl.remove();
             chatUI.appendMessage('error', 'Network error: ' + e.message);
         }
         setChatBusy(false);
+        if (file) clearChatFileInput();
         setTimeout(refreshSessionState, 0);
         setTimeout(refreshAgentState, 1000);
         return;
@@ -3153,15 +3235,14 @@ async function sendChat() {
         );
     }
 
+    // Add signal to fetchOpts if this is a plain object (not FormData)
+    if (!file) fetchOpts.signal = signal;
+
     try {
-        const res = await fetch(`/api/agents/${AGENT_ID}/chat`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({message: msg, user_id: 'web_test'}),
-            signal
-        });
+        const res = await fetch(`/api/agents/${AGENT_ID}/chat`, fetchOpts);
         const data = await res.json();
         if (data.buffered) {
+            if (file) clearChatFileInput();
             pollForResponse(thinkingId);
             return;
         } else if (data.injected) {
@@ -3169,6 +3250,7 @@ async function sendChat() {
             chatUI.markLastUserBubbleQueued();
         } else if (!data.success) {
             chatUI.removeThinkingIndicator(thinkingId);
+            $msgEl.remove();
             chatUI.appendMessage('error', 'Error: ' + (data.error || 'Unknown error'));
         } else if (data.clear_ui) {
             // /clear slash command — clear the UI and show confirmation as system message
@@ -3217,9 +3299,11 @@ async function sendChat() {
         if (e.name === 'AbortError') return; // stopChat() already cleaned up
         chatUI.closeStream();
         chatUI.removeThinkingIndicator(thinkingId);
+        $msgEl.remove();
         chatUI.appendMessage('error', 'Network error: ' + e.message);
     }
     setChatBusy(false);
+    if (file) clearChatFileInput();
     // Refresh summary and agent state after response completes
     setTimeout(refreshSessionState, 0);
     setTimeout(refreshAgentState, 1000);
