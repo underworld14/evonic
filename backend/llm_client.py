@@ -109,8 +109,11 @@ def strip_thinking_tags(content: str) -> Tuple[str, Optional[str]]:
     return cleaned, thinking_content
 
 
-def _convert_image_url_to_claude(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Convert OpenAI-style image_url content blocks to Anthropic image+source format."""
+def _convert_multimodal_to_claude(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Convert OpenAI-style multimodal content blocks to Anthropic format.
+
+    Handles image_url, input_audio, and video_url content types.
+    """
     result = []
     for msg in messages:
         content = msg.get("content")
@@ -119,10 +122,13 @@ def _convert_image_url_to_claude(messages: List[Dict[str, Any]]) -> List[Dict[st
             continue
         new_parts = []
         for part in content:
-            if isinstance(part, dict) and part.get("type") == "image_url":
+            if not isinstance(part, dict):
+                new_parts.append(part)
+                continue
+            ptype = part.get("type")
+            if ptype == "image_url":
                 url = (part.get("image_url") or {}).get("url", "")
                 if url.startswith("data:"):
-                    # data:<media_type>;base64,<data>
                     try:
                         header, b64data = url.split(",", 1)
                         media_type = header.split(":")[1].split(";")[0]
@@ -135,6 +141,37 @@ def _convert_image_url_to_claude(messages: List[Dict[str, Any]]) -> List[Dict[st
                 else:
                     new_parts.append({
                         "type": "image",
+                        "source": {"type": "url", "url": url},
+                    })
+            elif ptype == "input_audio":
+                # Convert to Claude audio format if supported; otherwise pass through
+                audio_info = part.get("input_audio") or {}
+                b64data = audio_info.get("data", "")
+                fmt = audio_info.get("format", "wav")
+                # Map format to MIME type for Claude
+                fmt_to_mime = {"wav": "audio/wav", "mp3": "audio/mpeg", "ogg": "audio/ogg",
+                               "mpeg": "audio/mpeg", "webm": "audio/webm"}
+                media_type = fmt_to_mime.get(fmt, f"audio/{fmt}")
+                new_parts.append({
+                    "type": "audio",
+                    "source": {"type": "base64", "media_type": media_type, "data": b64data},
+                })
+            elif ptype == "video_url":
+                # Convert video data URL to Claude format; pass through external URLs
+                url = (part.get("video_url") or {}).get("url", "")
+                if url.startswith("data:"):
+                    try:
+                        header, b64data = url.split(",", 1)
+                        media_type = header.split(":")[1].split(";")[0]
+                    except (ValueError, IndexError):
+                        media_type, b64data = "video/mp4", url
+                    new_parts.append({
+                        "type": "video",
+                        "source": {"type": "base64", "media_type": media_type, "data": b64data},
+                    })
+                else:
+                    new_parts.append({
+                        "type": "video",
                         "source": {"type": "url", "url": url},
                     })
             else:
@@ -205,6 +242,24 @@ class LLMClient:
                 self.temperature = None
                 self.api_format = "openai"
         self._cached_model_name = None
+        # Cache for global LLM settings (avoids repeated DB reads in hot path).
+        # TTL-based, simple dict — intentionally lock-free (worst case: 1 extra DB read).
+        self._settings_cache = {}
+        self._settings_cache_time = 0
+
+    def _get_cached_setting(self, cache_key: str, db_func, *args) -> Any:
+        """Return a cached setting value with a 30-second TTL.
+
+        On cache miss or TTL expiry, calls ``db_func(*args)`` and stores the
+        result (including None) so absent settings don't trigger repeated DB reads.
+        """
+        now = time.time()
+        if now - self._settings_cache_time > 30:
+            self._settings_cache = {}
+            self._settings_cache_time = now
+        if cache_key not in self._settings_cache:
+            self._settings_cache[cache_key] = db_func(*args)
+        return self._settings_cache[cache_key]
 
     def get_actual_model_name(self, force_refresh: bool = False) -> str:
         """Get the actual model name from the remote endpoint.
@@ -330,8 +385,8 @@ class LLMClient:
         try:
             from models.db import db as _db
 
-            _ctx_len = int(_db.get_setting("llm_context_length", 0) or 0)
-            _prompt_buf = int(_db.get_setting("llm_prompt_buffer", 2048) or 2048)
+            _ctx_len = int(self._get_cached_setting("llm_context_length", _db.get_setting, "llm_context_length", 0) or 0)
+            _prompt_buf = int(self._get_cached_setting("llm_prompt_buffer", _db.get_setting, "llm_prompt_buffer", 2048) or 2048)
             if _ctx_len > 0:
                 max_tokens = min(max_tokens, _ctx_len - _prompt_buf)
         except Exception:
@@ -407,7 +462,7 @@ class LLMClient:
 
         # Claude API uses {"type":"image","source":{...}} instead of OpenAI's image_url format.
         if is_claude:
-            processed_messages = _convert_image_url_to_claude(processed_messages)
+            processed_messages = _convert_multimodal_to_claude(processed_messages)
 
         if is_ollama_fmt:
             payload = {
@@ -448,7 +503,7 @@ class LLMClient:
         try:
             from models.db import db as _db
 
-            _val = _db.get_setting("llm_max_retries", None)
+            _val = self._get_cached_setting("llm_max_retries", _db.get_setting, "llm_max_retries", None)
             max_retries = int(_val) if _val is not None else 5
         except Exception:
             max_retries = 5

@@ -273,19 +273,9 @@ def run_tool_loop(agent: Dict[str, Any],
                 # Resolve the primary model config so we can probe it
                 _primary_config = None
                 try:
-                    _pm = db.get_agent_default_model(agent_id)
+                    _pm = db.get_agent_model(agent_id)
                     if _pm:
                         _primary_config = _build_model_config(_pm)
-                    elif agent.get('model'):
-                        # agent.model string fallback (same as Step 3 below)
-                        _dm = db.get_default_model()
-                        _primary_config = {
-                            'base_url': _dm.get('base_url') if _dm else None,
-                            'api_key': _dm.get('api_key') if _dm else None,
-                            'model_name': agent['model'],
-                            'timeout': _dm.get('timeout') if _dm else None,
-                            'thinking': False, 'thinking_budget': 0,
-                        }
                 except Exception:
                     pass
 
@@ -335,7 +325,7 @@ def run_tool_loop(agent: Dict[str, Any],
     # Step 2: If no fallback from state, resolve normal default model
     if not agent_model_config:
         try:
-            model = db.get_agent_default_model(agent_id)
+            model = db.get_agent_model(agent_id)
             if model:
                 agent_model_config = _build_model_config(model)
                 _logger.info("%s using model: %s (%s)", agent_id, model.get('name'), model.get('model_name'))
@@ -343,29 +333,6 @@ def run_tool_loop(agent: Dict[str, Any],
                 _logger.info("No model configured for agent %s, using config.py defaults", agent_id)
         except Exception as e:
             _logger.warning("Failed to resolve model for agent %s: %s", agent_id, e)
-
-    # Step 3: Fallback: agent.model string override (from agent General Settings)
-    if not agent_model_config and agent.get('model'):
-        import config as _config
-        try:
-            from models.db import db as _db
-            _dm = _db.get_default_model()
-            _base_url = _dm.get('base_url') if _dm else None
-            _api_key = _dm.get('api_key') if _dm else None
-            _timeout = _dm.get('timeout') if _dm else None
-        except Exception:
-            _base_url = None
-            _api_key = None
-            _timeout = None
-        agent_model_config = {
-            'base_url': _base_url,
-            'api_key': _api_key,
-            'model_name': agent['model'],
-            'timeout': _timeout,
-            'thinking': False,
-            'thinking_budget': 0,
-        }
-        _logger.info("Using agent model string override: %s", agent['model'])
 
     # Create LLMClient with resolved model config
     llm = LLMClient(model_config=agent_model_config) if agent_model_config else llm_client
@@ -418,6 +385,7 @@ def run_tool_loop(agent: Dict[str, Any],
         messages = _patched
 
     timeout_retries = 0
+    MIN_IMAGE_RETRIES = 3
     max_timeout_retries = int(db.get_setting('agent_timeout_retries', str(MAX_TIMEOUT_RETRIES)))
     max_tool_iterations = int(db.get_setting('max_tool_iterations', str(MAX_TOOL_ITERATIONS)))
     _compaction_attempted = False
@@ -453,6 +421,18 @@ def run_tool_loop(agent: Dict[str, Any],
                 return m
         return None
 
+    def _messages_have_images(msgs: list) -> bool:
+        """Return True if any user message contains multimodal image_url blocks."""
+        for _m in msgs:
+            _c = _m.get('content')
+            if _m.get('role') == 'user' and isinstance(_c, list):
+                if any(
+                    isinstance(p, dict) and p.get('type') == 'image_url'
+                    for p in _c
+                ):
+                    return True
+        return False
+
     def _get_agent_config_ig(agt_id: str) -> dict:
         """Thin wrapper that extends _get_agent_config with message/result scan config."""
         try:
@@ -478,6 +458,10 @@ def run_tool_loop(agent: Dict[str, Any],
                 "injection_guard_check_messages": False,
                 "injection_guard_result_mode": "warn",
             }
+
+    # Cache agent injection guard config once per run_tool_loop call
+    # to avoid redundant DB reads in the loop iterations and tool result scans.
+    _agent_ig_config = _get_agent_config_ig(agent_id)
 
     while _iteration < max_tool_iterations:
         _llm_call_count += 1
@@ -554,7 +538,7 @@ def run_tool_loop(agent: Dict[str, Any],
                 messages.insert(insert_at, sk_msg)
 
         # ── Layer A: Incoming Message Guard (pre-LLM injection scan) ──
-        _inj_cfg_a = _get_agent_config_ig(agent_id)
+        _inj_cfg_a = _agent_ig_config
         if _inj_cfg_a.get("injection_guard_check_messages"):
             _last_user = _get_last_user_message(messages)
             if _last_user is not None:
@@ -743,6 +727,49 @@ def run_tool_loop(agent: Dict[str, Any],
                 time.sleep(2)
                 continue
 
+            # ── Image-processing retry guard ──────────────────────────
+            # Image/vision requests are slower and more prone to
+            # transient failures (timeouts, server overload).  Give the
+            # primary model at least MIN_IMAGE_RETRIES attempts before
+            # falling back — falling back to a non-vision model is a
+            # dead-end for image requests.
+            _img_transient_types = (
+                'request_timeout', 'generation_timeout',
+                'provider_error', 'connection_error',
+                'llm_error', 'unknown_error',
+            )
+            if error_type in _img_transient_types:
+                # Don't retry context-exceeded errors — those need compaction
+                _img_err_lower = (result.get('error_detail') or '').lower()
+                _img_is_ctx = (
+                    'context length' in _img_err_lower
+                    or 'context size' in _img_err_lower
+                    or 'exceed_context' in _img_err_lower
+                    or 'exceeds the available context' in _img_err_lower
+                )
+                if (not _img_is_ctx
+                        and _messages_have_images(messages)
+                        and timeout_retries < MIN_IMAGE_RETRIES):
+                    _img_wait = min(2 ** (timeout_retries + 1), 30)  # 2s, 4s, 8s
+                    _img_attempt = timeout_retries + 1
+                    _logger.warning(
+                        "[image_retry] Attempt %d/%d failed for session %s: %s — retrying in %ds",
+                        _img_attempt, MIN_IMAGE_RETRIES, session_id,
+                        error_type, _img_wait)
+                    event_stream.emit('llm_retry', {
+                        'agent_id': agent_id, 'session_id': session_id,
+                        'external_user_id': external_user_id, 'channel_id': channel_id,
+                        'retry_count': _img_attempt, 'max_retries': MIN_IMAGE_RETRIES,
+                        'error_type': error_type,
+                        'user_message': (
+                            f"Processing image... "
+                            f"(retry {_img_attempt}/{MIN_IMAGE_RETRIES})"
+                        ),
+                    })
+                    time.sleep(_img_wait)
+                    timeout_retries += 1
+                    continue
+
             _resp_val = result.get('response', 'Unknown error')
             if isinstance(_resp_val, dict):
                 _resp_val = _resp_val.get('error') or str(_resp_val)
@@ -809,6 +836,7 @@ def run_tool_loop(agent: Dict[str, Any],
             # After all retries to the primary model fail, attempt the
             # agent's configured fallback model (if any) before giving up.
             _fallback_succeeded = False
+            _fallback_vision_stripped = False
             _fallback_model = db.get_agent_fallback_model(agent_id)
             if _fallback_model:
                 _logger.warning(
@@ -824,6 +852,43 @@ def run_tool_loop(agent: Dict[str, Any],
                 try:
                     _fallback_config = _build_model_config(_fallback_model)
                     _fallback_llm = LLMClient(model_config=_fallback_config)
+                    # If the fallback model doesn't support vision, strip image
+                    # content from messages — mirroring the primary model check
+                    # at loop start (lines 400-418).  Without this, a non-vision
+                    # fallback rejects multimodal image_url blocks.
+                    _fb_vision_supported = bool(_fallback_config.get('vision_supported', False))
+                    if not _fb_vision_supported:
+                        _fb_patched = []
+                        _fb_stripped = False
+                        for _fb_msg in messages:
+                            _fb_content = _fb_msg.get('content')
+                            if _fb_msg.get('role') == 'user' and isinstance(_fb_content, list):
+                                _has_img = any(
+                                    isinstance(p, dict) and p.get('type') == 'image_url'
+                                    for p in _fb_content
+                                )
+                                if _has_img:
+                                    _text_parts = [
+                                        p['text']
+                                        for p in _fb_content
+                                        if isinstance(p, dict) and p.get('type') == 'text'
+                                    ]
+                                    _user_text = _text_parts[0] if _text_parts else ''
+                                    _note = (
+                                        f"[System note: The user sent an image{' with the message: ' + _user_text if _user_text else ''}, "
+                                        "but the fallback model does not support image processing. "
+                                        "Please inform the user politely that you cannot process images with the current model, "
+                                        "and respond in the same language the user is using.]"
+                                    )
+                                    _fb_msg = {**_fb_msg, 'content': _note}
+                                    _fb_stripped = True
+                            _fb_patched.append(_fb_msg)
+                        if _fb_stripped:
+                            messages = _fb_patched
+                            _fallback_vision_stripped = True
+                            _logger.warning(
+                                "Stripped image content for fallback model %s (%s) — fallback does not support vision",
+                                _fallback_model.get('name'), _fallback_model.get('model_name'))
                     with llm_lock:
                         _fallback_result = _fallback_llm.chat_completion(
                             messages=messages,
@@ -875,7 +940,23 @@ def run_tool_loop(agent: Dict[str, Any],
                         "Fallback model exception for agent %s: %s", agent_id, _fe)
 
             if not _fallback_succeeded:
-                error_msg = _humanize_llm_error(error_detail)
+                # If we had to strip image content for a non-vision fallback,
+                # the user's image was the root cause — give actionable info
+                # rather than a cryptic LLM error.
+                if _fallback_vision_stripped:
+                    _logger.warning(
+                        "Both primary and fallback failed for agent %s — "
+                        "images were stripped for non-vision fallback. "
+                        "Primary error [%s]: %s.  Fallback also failed.",
+                        agent_id, error_type, error_detail)
+                    error_msg = (
+                        "Sorry, I couldn't process that image. The image "
+                        "model is currently unavailable and my fallback "
+                        "model doesn't support images. Please try again "
+                        "later or describe the image in text."
+                    )
+                else:
+                    error_msg = _humanize_llm_error(error_detail)
                 _err_dur = round(time.time() - _loop_start_time, 1)
                 db.add_chat_message(session_id, 'assistant', error_msg, agent_id=db_agent_id,
                                     metadata={"error": True, "timeline": timeline, "thinking_duration": _err_dur})
@@ -1011,14 +1092,16 @@ def run_tool_loop(agent: Dict[str, Any],
 
         if content:
             is_final = not bool(tool_calls)
-            event_stream.emit('llm_response_chunk', {
-                'agent_id': agent_id, 'session_id': session_id,
-                'external_user_id': external_user_id, 'channel_id': channel_id,
-                'content': content, 'is_final': is_final,
-                # Signal frontend to also render a standalone bubble for intermediate
-                # responses when send_intermediate_responses is enabled on the agent.
-                'send_as_message': is_final or bool(agent.get('send_intermediate_responses')),
-            })
+            # [DONE] is an internal nudge-response signal — never user-visible.
+            if content.strip() != "[DONE]":
+                event_stream.emit('llm_response_chunk', {
+                    'agent_id': agent_id, 'session_id': session_id,
+                    'external_user_id': external_user_id, 'channel_id': channel_id,
+                    'content': content, 'is_final': is_final,
+                    # Signal frontend to also render a standalone bubble for intermediate
+                    # responses when send_intermediate_responses is enabled on the agent.
+                    'send_as_message': is_final or bool(agent.get('send_intermediate_responses')),
+                })
 
         if not tool_calls:
             # Treat trivial single-character/punctuation-only responses (e.g. ">", "<")
@@ -1547,7 +1630,7 @@ def run_tool_loop(agent: Dict[str, Any],
             _SCAN_RESULT_TOOLS = frozenset({'read_file', 'bash', 'runpy'})
             _already_blocked = isinstance(tool_result, dict) and 'blocked_by' in tool_result
             if fn_name in _SCAN_RESULT_TOOLS and not _already_blocked:
-                _inj_cfg_b = _get_agent_config_ig(agent_id)
+                _inj_cfg_b = _agent_ig_config
                 if _inj_cfg_b.get('injection_guard_enabled', True):
                     # Extract result text for scanning
                     _result_text = ""

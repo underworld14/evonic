@@ -334,7 +334,6 @@ class SchemaMixin:
                     name TEXT NOT NULL,
                     description TEXT,
                     system_prompt TEXT,
-                    model TEXT,
                     vision_enabled BOOLEAN DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -365,6 +364,8 @@ class SchemaMixin:
                 ("sandbox_enabled", "BOOLEAN DEFAULT 0"),
                 ("attachments_enabled", "BOOLEAN DEFAULT 0"),
                 ("attachment_max_size_mb", "INTEGER DEFAULT 20"),
+                ("audio_enabled", "BOOLEAN DEFAULT 0"),
+                ("video_enabled", "BOOLEAN DEFAULT 0"),
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE agents ADD COLUMN {col} {defn}")
@@ -430,6 +431,17 @@ class SchemaMixin:
             # Migration: add fallback_model_id for per-agent model fallback
             try:
                 cursor.execute("ALTER TABLE agents ADD COLUMN fallback_model_id TEXT")
+            except sqlite3.OperationalError:
+                pass
+
+            # Migration: add model_id (renamed from default_model_id for clarity)
+            try:
+                cursor.execute("ALTER TABLE agents ADD COLUMN model_id TEXT")
+            except sqlite3.OperationalError:
+                pass
+            # Migrate data: copy default_model_id → model_id if column exists
+            try:
+                cursor.execute("UPDATE agents SET model_id = default_model_id WHERE model_id IS NULL AND default_model_id IS NOT NULL")
             except sqlite3.OperationalError:
                 pass
 
@@ -684,13 +696,16 @@ class SchemaMixin:
             """)
 
 
-            # Migration: rename type cloud to tunnel for existing workplaces
-            # If the old CHECK constraint (type IN 'cloud') is still on the table,
-            # the UPDATE will fail with IntegrityError. Recreate the table with the new schema.
-            try:
-                cursor.execute("UPDATE workplaces SET type = 'tunnel' WHERE type = 'cloud'")
-            except (sqlite3.OperationalError, sqlite3.IntegrityError):
+            # @TODO remove this code if no longer needed in future
+            # Migration: rename type cloud to tunnel for existing workplaces.
+            # Guarded by sqlite_master check so it only runs when the old
+            # CHECK constraint containing 'cloud' still exists.
+            row = cursor.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='workplaces'"
+            ).fetchone()
+            if row and 'cloud' in row[0]:
                 try:
+                    cursor.execute("DROP TABLE IF EXISTS workplaces_old")
                     cursor.execute("ALTER TABLE workplaces RENAME TO workplaces_old")
                     cursor.execute("""
                         CREATE TABLE workplaces (

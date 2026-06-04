@@ -205,15 +205,40 @@ class Scheduler:
     # Internal: Job registration
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _run_date_has_tz(run_date_str: str) -> bool:
+        """Check if an ISO 8601 string contains timezone information."""
+        try:
+            return datetime.fromisoformat(run_date_str).tzinfo is not None
+        except (ValueError, TypeError):
+            return False
+
+    def _make_run_date_aware(self, trigger_config: dict):
+        """If run_date lacks timezone info, make it timezone-aware and log a warning."""
+        run_date = trigger_config.get('run_date', '')
+        if not run_date or not isinstance(run_date, str):
+            return
+        if self._run_date_has_tz(run_date):
+            return
+        local_tz = datetime.now().astimezone().tzinfo
+        log.warning("run_date '%s' has no timezone info — treating as local time (%s)", run_date, local_tz)
+        try:
+            dt = datetime.fromisoformat(run_date)
+            dt = dt.replace(tzinfo=local_tz)
+            trigger_config['run_date'] = dt
+        except (ValueError, TypeError):
+            pass  # Malformed — let APScheduler handle the error
+
     def _build_trigger(self, trigger_type: str, trigger_config: dict):
         if trigger_type == 'cron':
             return CronTrigger(**trigger_config)
         elif trigger_type == 'interval':
             return IntervalTrigger(**trigger_config)
         elif trigger_type == 'date':
+            self._make_run_date_aware(trigger_config)
             return DateTrigger(**trigger_config)
         else:
-            raise ValueError(f"Unknown trigger_type: {trigger_type}")
+            raise ValueError(f"Unknown trigger_type: {trigger_config}")
 
     def _register_job(self, schedule_id: str, trigger_type: str, trigger_config: dict):
         """Register (or replace) an APScheduler job for this schedule."""
@@ -405,7 +430,9 @@ class Scheduler:
             main_db.add_chat_message(
                 session_id, 'assistant', message, agent_id=agent_id)
 
-            # Push via channel (Telegram, etc.) so the user sees it immediately
+            # Push via channel (Telegram, etc.) so the user sees it immediately.
+            # Only return on successful delivery — if the channel is down or
+            # send_message raises, fall through to handle_message as safety net.
             instance = channel_manager._active.get(channel_id)
             if instance and instance.is_running:
                 try:
@@ -414,12 +441,19 @@ class Scheduler:
                         "Delivered static_message directly: agent=%s user=%s "
                         "session=%s", agent_id, external_user_id, session_id,
                     )
+                    return  # Success — delivered, nothing more to do
                 except Exception as e:
                     log.error(
-                        "Failed to send static_message via channel %s: %s",
+                        "Failed to send static_message via channel %s: %s; "
+                        "falling through to handle_message",
                         channel_id, e,
                     )
-            return
+            else:
+                log.warning(
+                    "Channel %s not available/running for static_message; "
+                    "falling through to handle_message",
+                    channel_id,
+                )
 
         # Fallback: no real user/channel resolved — use the old LLM path.
         # The agent will process the message in a __scheduler__ session, but

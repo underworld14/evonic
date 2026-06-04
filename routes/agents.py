@@ -1068,19 +1068,84 @@ def api_llm_preview(agent_id):
 def api_chat(agent_id):
     if not db.get_agent(agent_id):
         return jsonify({'error': 'Agent not found'}), 404
-    data = request.get_json()
-    message = data.get('message', '').strip()
-    user_id = data.get('user_id', 'anonymous')
-    if not message:
+
+    # Support both JSON and multipart/form-data (for file uploads)
+    if request.content_type and request.content_type.startswith('multipart/form-data'):
+        message = (request.form.get('message') or '').strip()
+        user_id = (request.form.get('user_id') or 'anonymous').strip()
+        file = request.files.get('file')
+    else:
+        data = request.get_json()
+        message = data.get('message', '').strip()
+        user_id = data.get('user_id', 'anonymous')
+        file = None
+
+    if not message and not file:
         return jsonify({'error': 'Message is required'}), 400
 
     from backend.agent_runtime import agent_runtime
+    from routes.sessions import _process_upload, _ALLOWED_EXTS
+
+    image_url = None
+    upload_meta = None
+    attachment_info = None
+
+    if file:
+        # Validate extension
+        ext = os.path.splitext(file.filename or '')[1].lower()
+        if ext not in _ALLOWED_EXTS:
+            return jsonify({'error': f'File type {ext} not supported'}), 400
+
+        # Get/create session for attachment storage
+        session_id = db.get_or_create_session(agent_id, user_id)
+
+        # Check file size against agent config
+        cfg = db.get_agent_attachment_config(agent_id)
+        max_bytes = cfg.get('max_size_mb', 20) * 1024 * 1024
+        file.seek(0, os.SEEK_END)
+        fsize = file.tell()
+        file.seek(0)
+        if fsize > max_bytes:
+            return jsonify({'error': f'File too large (max {cfg.get("max_size_mb", 20)}MB)'}), 400
+
+        try:
+            result = _process_upload(
+                file, agent_id, session_id,
+                user_id,
+                None,  # channel_id
+            )
+        except Exception as e:
+            print(f"[WebChat] Upload processing failed: {e}")
+            return jsonify({'error': 'Failed to process uploaded file'}), 500
+
+        image_url = result['image_url']
+        attachment_info = result['attachment_info']
+        upload_meta = {'attachment_info': attachment_info}
+
+        # For non-image files, prepend extracted text to user message
+        if result['text_prefix']:
+            message = f"{result['text_prefix']}\n\n{message}" if message else result['text_prefix']
+
+        # Fallback display text when no user text provided
+        if not message:
+            message = '[Image]' if attachment_info.get('is_image') else f"[File: {attachment_info['filename']}]"
+
     try:
-        result = agent_runtime.handle_message(agent_id, user_id, message)
+        result = agent_runtime.handle_message(
+            agent_id, user_id, message,
+            image_url=image_url,
+            metadata=upload_meta,
+        )
         if result.get('buffered'):
-            return jsonify({'success': True, 'buffered': True})
+            resp = {'success': True, 'buffered': True}
+            if attachment_info:
+                resp['attachment_info'] = attachment_info
+            return jsonify(resp)
         if result.get('injected'):
-            return jsonify({'success': True, 'injected': True})
+            resp = {'success': True, 'injected': True}
+            if attachment_info:
+                resp['attachment_info'] = attachment_info
+            return jsonify(resp)
         resp = {
             'success': True,
             'response': result['response'],
@@ -1089,6 +1154,8 @@ def api_chat(agent_id):
             'slash_command': result.get('slash_command', False),
             'clear_ui': result.get('clear_ui', False),
         }
+        if attachment_info:
+            resp['attachment_info'] = attachment_info
         if result.get('error'):
             resp['error'] = True
         return jsonify(resp)
@@ -1288,7 +1355,7 @@ def api_chat_agent_state(agent_id):
                 }
         else:
             # Show primary model
-            prim_model = db.get_agent_default_model(agent_id)
+            prim_model = db.get_agent_model(agent_id)
             if prim_model:
                 active_model = {
                     'name': prim_model.get('name', 'unknown'),

@@ -37,15 +37,14 @@ class AgentMixin:
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO agents (id, name, description, system_prompt, model, is_super, enabled,
+                INSERT INTO agents (id, name, description, system_prompt, is_super, enabled,
                     vision_enabled, inject_agent_id, inject_datetime, send_intermediate_responses, enable_agent_state,
                     workspace, agent_messaging_enabled, sandbox_enabled, summarize_tail, artifacts_enabled,
-                    message_wrapper_enabled, fallback_model_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    message_wrapper_enabled, fallback_model_id, model_id, audio_enabled, video_enabled)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 agent['id'], agent.get('name', agent['id']),
                 agent.get('description', ''), agent.get('system_prompt', ''),
-                agent.get('model'),
                 1 if agent.get('is_super') else 0,
                 0 if agent.get('enabled') is False else 1,
                 1,  # vision_enabled
@@ -60,12 +59,15 @@ class AgentMixin:
                 1 if agent.get('artifacts_enabled') is not False else 0,
                 1 if agent.get('message_wrapper_enabled') is not False else 0,
                 agent.get('fallback_model_id'),
+                agent.get('model_id'),
+                1 if agent.get('audio_enabled') else 0,
+                1 if agent.get('video_enabled') else 0,
             ))
             conn.commit()
         return agent['id']
 
     def update_agent(self, agent_id: str, data: Dict[str, Any]) -> bool:
-        allowed = {'name', 'description', 'model', 'vision_enabled',
+        allowed = {'name', 'description', 'vision_enabled',
                    'summarize_threshold', 'summarize_tail', 'summarize_prompt',
                    'message_buffer_seconds', 'inject_agent_id', 'inject_datetime',
                    'send_intermediate_responses', 'outbound_buffer_seconds', 'message_wrapper_enabled', 'enable_agent_state', 'workspace',
@@ -73,7 +75,7 @@ class AgentMixin:
                    'avatar_path', 'disable_parallel_tool_execution', 'disable_turn_prefetch',
                    'agent_messaging_enabled', 'workplace_id',
                    'attachments_enabled', 'attachment_max_size_mb', 'artifacts_enabled',
-                   'fallback_model_id'}
+                   'fallback_model_id', 'audio_enabled', 'video_enabled'}
         updates = {k: v for k, v in data.items() if k in allowed}
         if not updates:
             return False
@@ -112,7 +114,7 @@ class AgentMixin:
             raise ValueError(f"Agent ID '{new_id}' already exists")
 
         # Build new agent dict: copy all fields, override id/name/desc, skip auto fields
-        auto_fields = {'id', 'created_at', 'updated_at', 'last_active_at',
+        auto_fields = {'id', 'created_at', 'updated_at', 'last_active_at', 'model',
                        'session_count', 'primary_channel_id', 'avatar_path'}
         clone = {}
         for k, v in source.items():

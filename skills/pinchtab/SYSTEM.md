@@ -50,6 +50,11 @@ PinchTab manages Chrome browser instances with tabs. The typical workflow:
 | `pinchtab_click` | Click an element by CSS selector or snapshot `ref` |
 | `pinchtab_type` | Type text into an input element |
 
+### Scripting
+| Tool | Description |
+|------|-------------|
+| `pinchtab_eval` | Evaluate a JavaScript expression in page context |
+
 ### Visual Capture
 | Tool | Description |
 |------|-------------|
@@ -63,6 +68,21 @@ When using `pinchtab_click` or `pinchtab_type`, the `selector` parameter accepts
 - **CSS selectors**: Standard CSS selectors like `"input"`, `"#submit-btn"`, `".nav-link"`, `"button[type=submit]"`.
 
 **WARNING:** Do NOT use the `nodeId` field from snapshot results as a selector. `nodeId` is Chrome's internal DOM identifier and is not a valid selector. For example, if a snapshot node shows `"ref": "e21", "nodeId": 361`, use `"e21"` — never `"node361"` or `"361"`.
+
+## Handling Dialogs / Modal Overlays
+
+When a page has a modal dialog, the snapshot includes **both** dialog elements and background page elements. Only elements inside the dialog are clickable — background elements will fail with "element is occluded".
+
+To handle this correctly:
+1. **Look for `role: "dialog"` nodes** in the snapshot — these indicate a modal overlay.
+2. **Only interact with elements inside the dialog** (children of the dialog node at higher depth). Ignore duplicate elements that appear at lower depth in the background.
+3. If you see an "occluded" error, take a fresh snapshot and look for the same element inside a dialog node.
+
+## Stale Refs After Actions
+
+Refs from `pinchtab_snapshot` can become invalid after any action that changes the page (type, click, navigate). If you get "ref not found" or "Node is detached" errors:
+1. **Always take a fresh snapshot** after type/click/navigate before interacting with new elements.
+2. Never reuse refs from a previous snapshot after a page state change.
 
 ## Token Efficiency
 

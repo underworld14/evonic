@@ -290,6 +290,24 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
             </div>
             <div class="mb-4">
                 <label class="flex items-center gap-3 cursor-pointer select-none">
+                    {{ toggle_widget(id='agent-audio', checked=agent.audio_enabled) }}
+                    <div>
+                        <span class="text-gray-600 dark:text-gray-300 text-sm font-medium">Audio Input</span>
+                        <p class="text-xs text-gray-400 mt-0.5">Allow agent to receive and process audio/voice messages as multimodal input. Requires a model that supports audio (e.g. Gemma 4).</p>
+                    </div>
+                </label>
+            </div>
+            <div class="mb-4">
+                <label class="flex items-center gap-3 cursor-pointer select-none">
+                    {{ toggle_widget(id='agent-video', checked=agent.video_enabled) }}
+                    <div>
+                        <span class="text-gray-600 dark:text-gray-300 text-sm font-medium">Video Input</span>
+                        <p class="text-xs text-gray-400 mt-0.5">Allow agent to receive and process video messages as multimodal input. Requires a model that supports video (e.g. Gemma 4). Max 20 MB.</p>
+                    </div>
+                </label>
+            </div>
+            <div class="mb-4">
+                <label class="flex items-center gap-3 cursor-pointer select-none">
                     {{ toggle_widget(id='agent-attachments', checked=agent.attachments_enabled) }}
                     <div>
                         <span class="text-gray-600 dark:text-gray-300 text-sm font-medium">Attachments (Files)</span>
@@ -449,6 +467,12 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
                 <div id="agent-variables-list" class="space-y-2 mb-3"></div>
                 <button type="button" onclick="addVariableRow()" class="text-sm text-indigo-500 hover:text-indigo-700 transition-colors">+ Add Variable</button>
             </div>
+            <!-- Plugin Settings Card (dynamic, hidden if no plugin declares agent_settings) -->
+            <div id="plugin-settings-card" class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 p-6 hidden">
+                <h3 class="text-sm font-semibold text-gray-800 dark:text-gray-100 mb-1">Plugin Settings</h3>
+                <p class="text-xs text-gray-400 mb-4">Per-agent settings from active plugins.</p>
+                <div id="plugin-settings-container" class="space-y-4"></div>
+            </div>
         </div>
         </div><!-- /grid -->
     </div>
@@ -511,7 +535,7 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
     <div id="tab-skills" class="tab-content hidden flex-1 min-h-0 overflow-y-auto">
         <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 p-6 max-w-3xl">
             <h3 class="text-base font-semibold text-gray-800 dark:text-gray-100 mb-1">Skills</h3>
-            <p class="text-xs text-gray-400 mb-4">Allow this agent to lazy-load skills via <code class="bg-gray-100 px-1 rounded">use_skill</code>. This only controls skill access — directly assigned tools are unaffected.</p>
+            <p class="text-xs text-gray-400 mb-4">Allow this agent to lazy-load skills via <code class="bg-gray-100 px-1 rounded">use_skill</code>. Eager (non-lazy) skills automatically inject all their tools. For selective tool picking, use the Tools tab.</p>
             <div id="skills-list" class="space-y-2">
                 <!-- Dynamically populated -->
             </div>
@@ -656,7 +680,24 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
                     <button onclick="retryWorkplaceConnect()" class="ml-auto text-xs text-yellow-700 dark:text-yellow-400 hover:underline flex-shrink-0">Retry</button>
                 </div>
                 <div class="p-4 border-t border-gray-200 dark:border-gray-700 flex-shrink-0">
+                    <!-- File preview strip -->
+                    <div id="chat-file-preview" class="hidden mb-2 flex items-center gap-2 px-2 py-1.5 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                        <img id="chat-file-preview-img" class="hidden w-12 h-12 object-cover rounded" alt="">
+                        <svg id="chat-file-preview-icon" class="hidden w-6 h-6 text-gray-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 2l5 5h-5V4zm-3 9h4v2h-4v-2zm0 3h4v2h-4v-2zm-2-3h1v2H8v-2zm0 3h1v2H8v-2z"/></svg>
+                        <span id="chat-file-preview-name" class="text-xs text-gray-600 dark:text-gray-300 truncate flex-1"></span>
+                        <span id="chat-file-preview-size" class="text-[10px] text-gray-400 flex-shrink-0"></span>
+                        <button type="button" onclick="clearChatFileInput()" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 flex-shrink-0" title="Remove file">
+                            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16ZM8.28 7.22a.75.75 0 0 0-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 1 0 1.06 1.06L10 11.06l1.72 1.72a.75.75 0 1 0 1.06-1.06L11.06 10l1.72-1.72a.75.75 0 0 0-1.06-1.06L10 8.94 8.28 7.22Z" clip-rule="evenodd"/></svg>
+                        </button>
+                    </div>
                     <div class="flex gap-2">
+                        <input type="file" id="chat-file-input" class="hidden"
+                               accept="image/*,.pdf,.txt,.md,.log,.json,.yaml,.yml,.xml,.csv,.tsv,.py,.js,.ts,.tsx,.jsx,.java,.go,.rs,.c,.cpp,.h,.rb,.php,.html,.css,.sql,.sh,.toml,.ini"
+                               onchange="onChatFileSelected(this)">
+                        <button type="button" id="chat-attach-btn" onclick="document.getElementById('chat-file-input').click()"
+                                class="p-2.5 text-gray-400 hover:text-indigo-500 transition-colors flex-shrink-0" title="Attach file">
+                            <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                        </button>
                         <textarea id="chat-input" placeholder="Type a message..." rows="1"
                             class="flex-1 p-2.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 resize-none overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed"
                             style="max-height: 150px;"
@@ -1555,6 +1596,8 @@ async function saveGeneral() {
             workplace_id: homeSel ? homeSel.value || null : null,
             system_prompt: document.getElementById('agent-system-prompt').value,
             vision_enabled: document.getElementById('agent-vision').checked ? 1 : 0,
+            audio_enabled: document.getElementById('agent-audio').checked ? 1 : 0,
+            video_enabled: document.getElementById('agent-video').checked ? 1 : 0,
             attachments_enabled: document.getElementById('agent-attachments').checked ? 1 : 0,
             attachment_max_size_mb: Math.min(20, Math.max(1, parseInt(document.getElementById('agent-attachment-max-mb').value) || 20)),
             sandbox_enabled: isRemoteOrTunnel ? 0 : (document.getElementById('agent-sandbox').checked ? 1 : 0),
@@ -1632,6 +1675,74 @@ async function saveAdvanced() {
     showToast("Advanced settings saved!", "success");
     } finally {
         setSaveLoading(btnId, false);
+    }
+}
+
+// ==================== Plugin Settings (per-agent) ====================
+async function loadPluginSettings() {
+    try {
+        const res = await fetch(`/api/agents/${AGENT_ID}/plugin-settings`);
+        const data = await res.json();
+        const plugins = data.plugin_settings || [];
+        const container = document.getElementById('plugin-settings-container');
+        const card = document.getElementById('plugin-settings-card');
+        if (!plugins.length) { card.classList.add('hidden'); return; }
+        card.classList.remove('hidden');
+        container.innerHTML = '';
+        for (const plugin of plugins) {
+            for (const s of plugin.settings) {
+                const id = `plugin-setting-${plugin.plugin_id}-${s.name}`;
+                if (s.type === 'boolean') {
+                    container.innerHTML += `
+                    <div>
+                        <label class="flex items-center gap-3 cursor-pointer select-none">
+                            <span class="relative inline-flex items-center">
+                                <input type="checkbox" id="${id}" ${s.value ? 'checked' : ''}
+                                       class="sr-only peer"
+                                       onchange="savePluginSetting('${plugin.plugin_id}', '${s.name}', this.checked)">
+                                <span class="dyn-toggle"></span>
+                            </span>
+                            <div>
+                                <span class="text-gray-600 dark:text-gray-300 text-sm font-medium">${s.label}</span>
+                                <span class="text-xs text-gray-400 ml-1">(${plugin.plugin_name})</span>
+                                <p class="text-xs text-gray-400 mt-0.5">${s.description || ''}</p>
+                            </div>
+                        </label>
+                    </div>`;
+                } else {
+                    container.innerHTML += `
+                    <div>
+                        <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">${s.label} <span class="text-xs text-gray-400">(${plugin.plugin_name})</span></label>
+                        <input type="${s.type === 'number' ? 'number' : 'text'}" id="${id}" value="${s.value ?? ''}"
+                               class="w-full p-2.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10"
+                               onchange="savePluginSetting('${plugin.plugin_id}', '${s.name}', this.value)">
+                        <p class="text-xs text-gray-400 mt-1">${s.description || ''}</p>
+                    </div>`;
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Failed to load plugin settings:', e);
+    }
+}
+
+async function savePluginSetting(pluginId, name, value) {
+    try {
+        const body = {};
+        body[name] = value;
+        const res = await fetch(`/api/agents/${AGENT_ID}/plugin-settings/${pluginId}`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Plugin setting saved.', 'success');
+        } else {
+            showToast(data.error || 'Failed to save.', 'error');
+        }
+    } catch (e) {
+        showToast('Failed to save plugin setting.', 'error');
     }
 }
 
@@ -1984,12 +2095,24 @@ function renderSkillsList() {
 
 async function toggleSkill(skillId) {
     if (allowedSkillIds.includes(skillId)) {
+        // Deactivating — no dialog needed
         allowedSkillIds = allowedSkillIds.filter(id => id !== skillId);
+        renderSkillsList();
+        await saveSkillsQuiet();
     } else {
+        // Activating — check if non-lazy skill needs confirmation
+        const skill = allSkillsDefs.find(s => s.id === skillId);
+        if (skill && skill.lazy_tools !== true) {
+            if (!confirm('This skill is eagerly loaded (non-lazy). Activating it will automatically add all its tools to the agent. If you want to pick specific tools instead, use the Tools tab.')) {
+                // User cancelled — revert the checkbox visually
+                renderSkillsList();
+                return;
+            }
+        }
         allowedSkillIds.push(skillId);
+        renderSkillsList();
+        await saveSkillsQuiet();
     }
-    renderSkillsList();
-    await saveSkillsQuiet();
 }
 
 async function saveSkillsQuiet() {
@@ -3018,6 +3141,43 @@ function handleChatBtn() {
     sendChat();
 }
 
+// ==================== File Upload Helpers ====================
+
+function onChatFileSelected(input) {
+    const file = input.files[0];
+    const preview = document.getElementById('chat-file-preview');
+    if (!file) { preview.classList.add('hidden'); return; }
+
+    const previewImg = document.getElementById('chat-file-preview-img');
+    const previewIcon = document.getElementById('chat-file-preview-icon');
+    const previewName = document.getElementById('chat-file-preview-name');
+    const previewSize = document.getElementById('chat-file-preview-size');
+
+    previewName.textContent = file.name;
+    previewSize.textContent = file.size < 1024 ? `${file.size} B`
+        : file.size < 1048576 ? `${(file.size / 1024).toFixed(1)} KB`
+        : `${(file.size / 1048576).toFixed(1)} MB`;
+
+    if (file.type.startsWith('image/')) {
+        previewImg.src = URL.createObjectURL(file);
+        previewImg.classList.remove('hidden');
+        previewIcon.classList.add('hidden');
+    } else {
+        previewImg.classList.add('hidden');
+        previewIcon.classList.remove('hidden');
+    }
+    preview.classList.remove('hidden');
+}
+
+function clearChatFileInput() {
+    const input = document.getElementById('chat-file-input');
+    input.value = '';
+    const preview = document.getElementById('chat-file-preview');
+    preview.classList.add('hidden');
+    const previewImg = document.getElementById('chat-file-preview-img');
+    if (previewImg.src) { URL.revokeObjectURL(previewImg.src); previewImg.src = ''; }
+}
+
 function stopChat() {
     _destroyCurrentTurn();
     if (chatPollTimer) {
@@ -3031,11 +3191,23 @@ function stopChat() {
 async function sendChat() {
     const input = document.getElementById('chat-input');
     const msg = input.value.trim();
-    if (!msg) return;
+    const fileInput = document.getElementById('chat-file-input');
+    const file = fileInput.files[0] || null;
+    if (!msg && !file) return;
     input.value = '';
     input.style.height = 'auto';
     window._clearChatDraft();
-    chatUI.appendMessage('user', msg);
+
+    // Build optimistic metadata for image/file preview
+    let optimisticMeta = null;
+    if (file && file.type.startsWith('image/')) {
+        optimisticMeta = {image_url: URL.createObjectURL(file), _blob_url: true};
+    } else if (file) {
+        optimisticMeta = {attachment_info: {filename: file.name, mime_type: file.type, is_image: false}};
+    }
+    const displayText = msg || (file ? (file.type.startsWith('image/') ? '' : `[File: ${file.name}]`) : '');
+
+    const $msgEl = chatUI.appendMessage('user', displayText, {metadata: optimisticMeta});
     // Capture the user message wrapper for anchoring the thinking bubble
     const container = document.getElementById('chat-messages');
     const userWrappers = container ? container.querySelectorAll('[data-msg-role="user"]') : [];
@@ -3043,21 +3215,35 @@ async function sendChat() {
     chatUI.scrollToBottom();
     setChatBusy(true);
 
+    // Build fetch options based on whether we have a file
+    let fetchOpts;
+    if (file) {
+        const formData = new FormData();
+        formData.append('message', msg);
+        formData.append('user_id', 'web_test');
+        formData.append('file', file);
+        fetchOpts = { method: 'POST', body: formData };
+    } else {
+        fetchOpts = {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({message: msg, user_id: 'web_test'}),
+        };
+    }
+
     // If an SSE stream is already active, the agent is mid-turn — inject the message
     if (chatUI.hasActiveStream()) {
         try {
-            const res = await fetch(`/api/agents/${AGENT_ID}/chat`, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({message: msg, user_id: 'web_test'}),
-            });
+            const res = await fetch(`/api/agents/${AGENT_ID}/chat`, fetchOpts);
             const data = await res.json();
             if (data.injected) {
                 chatUI.markLastUserBubbleQueued();
                 setChatBusy(false);
+                if (file) clearChatFileInput();
                 return;
             }
             if (!data.success) {
+                $msgEl.remove();
                 chatUI.appendMessage('error', 'Error: ' + (data.error || 'Unknown error'));
             } else {
                 const $resp = chatUI.appendMessage('assistant', data.response);
@@ -3068,9 +3254,11 @@ async function sendChat() {
                 await syncLastChatTs();
             }
         } catch(e) {
+            $msgEl.remove();
             chatUI.appendMessage('error', 'Network error: ' + e.message);
         }
         setChatBusy(false);
+        if (file) clearChatFileInput();
         setTimeout(refreshSessionState, 0);
         setTimeout(refreshAgentState, 1000);
         return;
@@ -3121,15 +3309,14 @@ async function sendChat() {
         );
     }
 
+    // Add signal to fetchOpts if this is a plain object (not FormData)
+    if (!file) fetchOpts.signal = signal;
+
     try {
-        const res = await fetch(`/api/agents/${AGENT_ID}/chat`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({message: msg, user_id: 'web_test'}),
-            signal
-        });
+        const res = await fetch(`/api/agents/${AGENT_ID}/chat`, fetchOpts);
         const data = await res.json();
         if (data.buffered) {
+            if (file) clearChatFileInput();
             pollForResponse(thinkingId);
             return;
         } else if (data.injected) {
@@ -3137,6 +3324,7 @@ async function sendChat() {
             chatUI.markLastUserBubbleQueued();
         } else if (!data.success) {
             chatUI.removeThinkingIndicator(thinkingId);
+            $msgEl.remove();
             chatUI.appendMessage('error', 'Error: ' + (data.error || 'Unknown error'));
         } else if (data.clear_ui) {
             // /clear slash command — clear the UI and show confirmation as system message
@@ -3185,9 +3373,11 @@ async function sendChat() {
         if (e.name === 'AbortError') return; // stopChat() already cleaned up
         chatUI.closeStream();
         chatUI.removeThinkingIndicator(thinkingId);
+        $msgEl.remove();
         chatUI.appendMessage('error', 'Network error: ' + e.message);
     }
     setChatBusy(false);
+    if (file) clearChatFileInput();
     // Refresh summary and agent state after response completes
     setTimeout(refreshSessionState, 0);
     setTimeout(refreshAgentState, 1000);
@@ -3541,7 +3731,7 @@ async function loadAgentModelSelector() {
         ]);
         const modelsData = await modelsRes.json();
         const agentModelData = await agentModelRes.json();
-        const currentModelId = agentModelData.default_model_id || '';
+        const currentModelId = agentModelData.model_id || '';
         const currentFallbackModelId = agentModelData.fallback_model_id || '';
 
         const sel = document.getElementById('agent-model-select');
@@ -3567,6 +3757,7 @@ async function loadAgentModelSelector() {
 }
 loadAgentModelSelector();
 loadVariables();
+loadPluginSettings();
 loadInjectionGuardState();
 loadAgentSafetyRules();
 
@@ -4559,7 +4750,7 @@ document.addEventListener('keydown', function(e) {
 
 <!-- Plan File Editor Modal -->
 <div id="plan-editor-backdrop" class="hidden fixed inset-0 bg-black/50 flex items-start justify-center p-4 z-[200]" role="presentation">
-    <div id="plan-editor-modal" class="hidden bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-3xl h-[calc(100vh-2rem)] flex flex-col overflow-hidden" role="dialog" aria-modal="true" aria-label="Plan file editor" onclick="event.stopPropagation()">
+    <div id="plan-editor-modal" class="hidden bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-3xl flex flex-col overflow-hidden" style="height: calc(100vh - 2rem)" role="dialog" aria-modal="true" aria-label="Plan file editor" onclick="event.stopPropagation()">
         <!-- Header -->
         <div class="flex items-center justify-between px-5 py-3 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
             <h3 id="plan-editor-title" class="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">📋 Plan File</h3>
@@ -4568,9 +4759,9 @@ document.addEventListener('keydown', function(e) {
             </button>
         </div>
         <!-- Editor Body -->
-        <div class="flex-1 overflow-hidden p-5">
+        <div class="flex-1 min-h-0 flex flex-col p-5">
             <textarea id="plan-editor-textarea"
-                class="w-full h-full min-h-[350px] p-4 text-sm font-mono text-gray-800 dark:text-gray-200 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-600 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:focus:ring-indigo-400 focus:border-transparent transition-colors"
+                class="flex-1 w-full min-h-[350px] p-4 text-sm font-mono text-gray-800 dark:text-gray-200 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-600 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:focus:ring-indigo-400 focus:border-transparent transition-colors"
                 placeholder="Loading plan..."
                 spellcheck="false"></textarea>
         </div>

@@ -5,6 +5,7 @@ Pure data preparation — no LLM calls, no threading.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -27,7 +28,7 @@ def _token_count(text: str) -> int:
 
 from models.db import db
 from backend.tools import tool_registry
-from backend.skills_manager import SkillsManager
+from backend.skills_manager import SkillsManager, skills_manager
 from config import AGENT_MAX_TOOL_RESULT_CHARS as MAX_TOOL_RESULT_CHARS
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -63,6 +64,32 @@ def _get_mtime(path: str) -> float:
         return os.stat(path).st_mtime
     except OSError:
         return 0.0
+
+
+def _get_skills_mtime_hash() -> str:
+    """Compute a hash over all skill directories' SYSTEM.md and skill.json mtimes.
+
+    Returns a SHA-256 hex digest that changes whenever any skill is added,
+    removed, or modified. Uses only stat() calls — no JSON parsing or tool
+    def loading, unlike SkillsManager().list_skills().
+    """
+    skills_dir = os.path.join(_BASE_DIR, 'skills')
+    if not os.path.isdir(skills_dir):
+        return hashlib.sha256(b'').hexdigest()
+
+    entries = []
+    for name in sorted(os.listdir(skills_dir)):
+        skill_dir = os.path.join(skills_dir, name)
+        if not os.path.isdir(skill_dir):
+            continue
+        skill_json = os.path.join(skill_dir, 'skill.json')
+        if not os.path.isfile(skill_json):
+            continue
+        system_md = os.path.join(skill_dir, 'SYSTEM.md')
+        max_mtime = max(_get_mtime(system_md), _get_mtime(skill_json))
+        entries.append(f"{name}:{max_mtime}")
+
+    return hashlib.sha256(','.join(entries).encode()).hexdigest()
 
 
 def _build_portal_info(agent_id: str) -> list:
@@ -206,8 +233,8 @@ def _build_static_prompt(agent: Dict[str, Any]) -> str:
             parts.append("- **Save**: Use `write_file` with path `/_self/kb/filename` to store a new KB file.")
             parts.append("- **Read**: Use the `read` tool with the bare filename (no path) to read a KB file.")
             parts.append("- **KB vs Remember**: Use `read` for reference documents, guides, and long-form content. Use `remember` for short, searchable facts you want to recall across conversations.")
-            parts.append("- **Frontmatter**: KB files may include YAML frontmatter (delimited by `---` lines) with a `description` field. This description appears as a snippet in the \"Available Knowledge Files\" listing, helping agents decide whether to read the full file.")
-            parts.append("- **Best practices**: Store structured reference material in KB (specs, API docs, conventions). Keep each file focused on one topic. Update KB files when information changes.")
+            parts.append("- **Frontmatter**: KB files MUST include YAML frontmatter (delimited by `---` lines) with a `description` field. This description appears as a snippet in the \"Available Knowledge Files\" listing, helping agents decide whether to read the full file.")
+            parts.append("- **Best practices**: Store structured reference material in KB (specs, API docs, conventions). Keep each file focused on one topic. Update KB files when information changes. Always include frontmatter with a `description` when creating a new KB file.")
 
             # Inject notes.md instructions only if notes.md exists in KB
             if 'notes.md' in files:
@@ -253,7 +280,7 @@ def _build_static_prompt(agent: Dict[str, Any]) -> str:
     )
 
     # List available skills with SYSTEM.md so the agent knows what it can load
-    skills_mgr = SkillsManager()
+    skills_mgr = skills_manager
     _allowed_skills = None if agent.get('is_super') else set(db.get_agent_skills(eid))
     skills_with_system_md = []
     skill_briefs = []
@@ -344,6 +371,20 @@ def _build_static_prompt(agent: Dict[str, Any]) -> str:
             "— installed packages and written files survive between tool invocations."
         )
 
+    # List available agent variables (names only, never values) so the LLM
+    # knows to reference $VAR_NAME in bash/runpy instead of literal secrets.
+    agent_vars = db.get_agent_variables(eid)
+    if agent_vars:
+        parts.append("\n## Environment Variables")
+        parts.append(
+            "The following variables are automatically available as environment variables "
+            "in `bash` and `runpy` tools. Use `$VAR_NAME` in bash or `os.environ['VAR_NAME']` "
+            "in Python. NEVER output literal values of secret variables — they are injected automatically."
+        )
+        for var in agent_vars:
+            label = " (secret)" if var.get('is_secret') else ""
+            parts.append(f"- `${var['key']}`{label}")
+
     return "\n".join(parts) if parts else "You are a helpful assistant."
 
 
@@ -362,17 +403,9 @@ def _cache_key_valid(agent: Dict[str, Any], cache_entry: Dict[str, Any]) -> bool
     if _get_mtime(kb_dir) != cache_entry['kb_mtime']:
         return False
 
-    # Check skills mtimes (SYSTEM.md and skill.json)
-    cached_skills_mtimes = cache_entry.get('skills_mtimes', {})
-    skills_mgr = SkillsManager()
-    for skill in skills_mgr.list_skills():
-        sid = skill.get('id', '')
-        skill_dir = skill.get('_dir', os.path.join(_BASE_DIR, 'skills', sid))
-        system_md_mtime = _get_mtime(os.path.join(skill_dir, 'SYSTEM.md'))
-        skill_json_mtime = _get_mtime(os.path.join(skill_dir, 'skill.json'))
-        current_mtime = max(system_md_mtime, skill_json_mtime)
-        if current_mtime != cached_skills_mtimes.get(sid, 0.0):
-            return False
+    # Check skills hash (covers SYSTEM.md and skill.json for all skill dirs)
+    if _get_skills_mtime_hash() != cache_entry.get('skills_hash', ''):
+        return False
 
     # Check tools hash (assigned tool IDs)
     assigned_ids = frozenset(db.get_agent_tools(eid))
@@ -385,6 +418,12 @@ def _cache_key_valid(agent: Dict[str, Any], cache_entry: Dict[str, Any]) -> bool
 
     # Check sandbox_enabled — toggling the sandbox setting must invalidate the cache
     if agent.get('sandbox_enabled', 0) != cache_entry.get('sandbox_enabled', 0):
+        return False
+
+    # Check agent variables hash (adding/removing/changing variables must invalidate)
+    current_vars = db.get_agent_variables(eid)
+    vars_key = str(sorted((v['key'], v.get('is_secret', False)) for v in current_vars))
+    if hashlib.sha256(vars_key.encode()).hexdigest() != cache_entry.get('vars_hash', ''):
         return False
 
     return True
@@ -411,25 +450,24 @@ def build_system_prompt(agent: Dict[str, Any]) -> str:
         # Build mtime snapshot for cache validation
         sp_path = _system_prompt_path(eid)
         kb_dir = os.path.join(_AGENTS_DIR, eid, 'kb')
-        skills_mtimes = {}
-        skills_mgr = SkillsManager()
-        for skill in skills_mgr.list_skills():
-            sid = skill.get('id', '')
-            skill_dir = skill.get('_dir', os.path.join(_BASE_DIR, 'skills', sid))
-            system_md_mtime = _get_mtime(os.path.join(skill_dir, 'SYSTEM.md'))
-            skill_json_mtime = _get_mtime(os.path.join(skill_dir, 'skill.json'))
-            skills_mtimes[sid] = max(system_md_mtime, skill_json_mtime)
+        skills_hash = _get_skills_mtime_hash()
 
         assigned_ids = frozenset(db.get_agent_tools(eid))
+
+        # Compute variables hash for cache invalidation
+        current_vars = db.get_agent_variables(eid)
+        vars_key = str(sorted((v['key'], v.get('is_secret', False)) for v in current_vars))
+        vars_hash = hashlib.sha256(vars_key.encode()).hexdigest()
 
         _system_prompt_cache[aid] = {
             'static_prompt': static_prompt,
             'sp_mtime': _get_mtime(sp_path),
             'kb_mtime': _get_mtime(kb_dir),
-            'skills_mtimes': skills_mtimes,
+            'skills_hash': skills_hash,
             'tools_hash': str(sorted(assigned_ids)),
             'ctx_mtime': _get_mtime(__file__),
             'sandbox_enabled': agent.get('sandbox_enabled', 0),
+            'vars_hash': vars_hash,
         }
 
     prompt = static_prompt
@@ -617,6 +655,36 @@ def build_tools(agent: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "function": tool_def['function']
                 })
 
+    # Auto-inject eagerly loaded skill tools for assigned skills
+    # This ensures that when an agent has a skill assigned in agent_skills and that skill
+    # is eagerly loaded (no lazy_tools=true), the tools are available without manual
+    # tool assignment in agent_tools.
+    if not agent.get('is_super'):
+        assigned_skill_ids = set(db.get_agent_skills(eid))
+        if assigned_skill_ids:
+            for skill in skills_manager.list_skills():
+                skill_id = skill.get('id', '')
+                if skill_id not in assigned_skill_ids:
+                    continue
+                # Skip lazy-loaded skills — their tools are injected via use_skill
+                if skill.get('lazy_tools', False):
+                    continue
+                # Skip super_only skills for non-super agents
+                if skill.get('super_only', False):
+                    continue
+                defs = skills_manager.get_skill_tool_defs(skill_id)
+                for tool_def in defs:
+                    fn_name = tool_def.get('function', {}).get('name', '')
+                    if not fn_name:
+                        continue
+                    # Avoid duplicates
+                    if any(t['function']['name'] == fn_name for t in tools):
+                        continue
+                    tools.append({
+                        "type": "function",
+                        "function": tool_def['function']
+                    })
+
     # ── Patch /workspace and Docker/container references for non-sandbox agents ──
     # Tool JSON definitions contain /workspace paths and Docker/container
     # language in function/parameter descriptions. Non-sandbox agents
@@ -731,16 +799,34 @@ def command_hint_from_content(content: str) -> str:
 def build_message_entry(msg: dict, agent: dict) -> dict:
     """Convert a DB message row into an LLM message dict."""
     entry = {"role": msg['role']}
-    msg_image = None
-    if msg.get('metadata') and isinstance(msg['metadata'], dict):
-        msg_image = msg['metadata'].get('image_url')
-    if msg_image and agent.get('vision_enabled'):
+    _msg_meta = msg.get('metadata') if isinstance(msg.get('metadata'), dict) else {}
+    msg_image = _msg_meta.get('image_url') if _msg_meta else None
+    msg_audio = _msg_meta.get('audio_url') if _msg_meta else None
+    msg_video = _msg_meta.get('video_url') if _msg_meta else None
+    has_image = msg_image and agent.get('vision_enabled')
+    has_audio = msg_audio and agent.get('audio_enabled')
+    has_video = msg_video and agent.get('video_enabled')
+    if has_image or has_audio or has_video:
         parts = []
-        if msg.get('content') and msg['content'] != '[Image]':
-            parts.append({"type": "text", "text": msg['content']})
-        parts.append({"type": "image_url", "image_url": {"url": msg_image}})
-        if not parts[0].get('text') if parts else True:
-            parts.insert(0, {"type": "text", "text": "What is in this image?"})
+        text_content = msg.get('content', '')
+        if text_content and text_content not in ('[Image]', '[Audio]', '[Video]'):
+            parts.append({"type": "text", "text": text_content})
+        if has_image:
+            parts.append({"type": "image_url", "image_url": {"url": msg_image}})
+        if has_audio:
+            if msg_audio.startswith("data:"):
+                try:
+                    header, b64data = msg_audio.split(",", 1)
+                    fmt = header.split(":")[1].split(";")[0].split("/")[1]
+                except (ValueError, IndexError):
+                    fmt, b64data = "wav", msg_audio
+                parts.append({"type": "input_audio", "input_audio": {"data": b64data, "format": fmt}})
+            else:
+                parts.append({"type": "input_audio", "input_audio": {"data": msg_audio, "format": "wav"}})
+        if has_video:
+            parts.append({"type": "video_url", "video_url": {"url": msg_video}})
+        if not parts or parts[0].get('type') != 'text':
+            parts.insert(0, {"type": "text", "text": "What is in this media?"})
         entry['content'] = parts
     elif msg.get('content'):
         content = msg['content']
