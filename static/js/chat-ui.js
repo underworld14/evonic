@@ -855,6 +855,7 @@ class SSEAdapter {
         }
         // done: stop reconnecting after this
         if (evtName === 'done') {
+            console.warn('[sse] _dispatch done _lastSeq=', this._lastSeq, 'data.seq=', data.seq);
             this._handler({ event: 'done', data, seq: data.seq || 0 });
             this.stop();
             return;
@@ -1096,19 +1097,14 @@ class Turn {
         // Timeline panel container
         this.$panel = $(`<div class="flex ${alignClass}" data-turn-id="${this.id}">`);
         const $panelInner = $('<div class="ml-5 max-w-[80%]">');
-        this.$timeline = $('<div class="timeline-panel space-y-0.5 py-0.5">').hide();
+        this.$timeline = $('<div class="timeline-panel hidden space-y-0.5 py-0.5">');
         $panelInner.append(this.$timeline);
         this.$panel.append($panelInner);
 
-        // Click to expand/collapse timeline with smooth animation
+        // Click to expand/collapse timeline
         $inner.on('click', () => {
-            if (this.$timeline.is(':visible')) {
-                this.$timeline.slideUp(200);
-                $inner.find('.tool-trace-chevron').removeClass('rotated');
-            } else {
-                this.$timeline.slideDown(200);
-                $inner.find('.tool-trace-chevron').addClass('rotated');
-            }
+            this.$timeline.toggleClass('hidden');
+            $inner.find('.tool-trace-chevron').toggleClass('rotated');
         });
 
         // Always append at the end of the container. Inserting after $anchor would
@@ -1118,7 +1114,7 @@ class Turn {
         this.$bubble.after(this.$panel);
 
         // Auto-expand timeline on creation so user sees thought process in real-time
-        this.$timeline.slideDown(200);
+        this.$timeline.removeClass('hidden');
         this.$bubble.find('.tool-trace-chevron').addClass('rotated');
     }
 
@@ -1271,10 +1267,12 @@ class Turn {
         }
 
         if (evtName === 'done') {
+            console.warn('[turn] done event turn=%s _finalized=%s _finalContent=%s', this.id, this._finalized, !!this._finalContent);
             this._finalizeBubble(data.thinking_duration);
             // Fire final:response so page-level code can render the response bubble
             // synchronously — no dependency on pollForResponse JSONL poll.
             if (this._finalContent) {
+                console.warn('[turn] firing final:response turn=%s contentLen=%d', this.id, this._finalContent.length);
                 this._onTrigger('final:response', {
                     turnId: this.id,
                     content: this._finalContent,
@@ -1316,7 +1314,7 @@ class Turn {
         if (!$entry) return;
 
         this.$timeline.append($entry);
-        if (!this.$timeline.is(':visible')) this.$timeline.slideDown(200);
+        this.$timeline.removeClass('hidden');
 
         // Update step count badge
         const toolCount = this.$timeline.find('.timeline-entry[data-tool-type="tool_call"]').length;
@@ -1388,7 +1386,8 @@ class Turn {
     // ── Finalization ──────────────────────────────────────────────────────────
 
     _finalizeBubble(duration) {
-        if (this._finalized) return;
+        if (this._finalized) { console.warn('[turn] _finalizeBubble SKIP already finalized turn=%s', this.id); return; }
+        console.warn('[turn] _finalizeBubble turn=%s duration=%s timelineEntries=%d', this.id, duration, this.$timeline.find('.timeline-entry').length);
         this._finalized = true;
         this._clearTimers();
 
@@ -1408,9 +1407,7 @@ class Turn {
         this._deactivateEntry(this.$timeline.find('.timeline-entry:last-child'));
 
         // Auto-collapse the timeline when turn completes, keeping UI clean
-        if (this.$timeline.is(':visible')) {
-            this.$timeline.slideUp(200);
-        }
+        this.$timeline.addClass('hidden');
         this.$bubble.find('.tool-trace-chevron').removeClass('rotated');
 
         this.phase = 'done';
@@ -1496,7 +1493,7 @@ class Turn {
         });
 
         this.$timeline.append($card);
-        if (!this.$timeline.is(':visible')) this.$timeline.slideDown(200);
+        this.$timeline.removeClass('hidden');
         this._smartScroll();
     }
 
@@ -2028,7 +2025,16 @@ class ChatUI {
 
     
     closeStream() {
-        // No-op: transports are stopped via turn.dispose()
+        // Stop all active transports across all turns so reconnecting SSE
+        // adapters don't interfere with pollForResponse finalizing.
+        for (const [, turn] of this._turns) {
+            if (!turn._finalized && turn._transports) {
+                for (const t of turn._transports) {
+                    try { t.stop(); } catch (e) {  }
+                }
+                turn._transports.length = 0;
+            }
+        }
     }
 
     

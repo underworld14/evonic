@@ -487,7 +487,16 @@ export class ChatUI {
 
     /** @deprecated */
     closeStream() {
-        // No-op: transports are stopped via turn.dispose()
+        // Stop all active transports across all turns so reconnecting SSE
+        // adapters don't interfere with pollForResponse finalizing.
+        for (const [, turn] of this._turns) {
+            if (!turn._finalized && turn._transports) {
+                for (const t of turn._transports) {
+                    try { t.stop(); } catch (e) { /* ignore */ }
+                }
+                turn._transports.length = 0;
+            }
+        }
     }
 
     /** @deprecated */

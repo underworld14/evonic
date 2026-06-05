@@ -199,6 +199,7 @@ export class SSEAdapter {
         }
         // done: stop reconnecting after this
         if (evtName === 'done') {
+            console.warn('[sse] _dispatch done _lastSeq=', this._lastSeq, 'data.seq=', data.seq);
             this._handler({ event: 'done', data, seq: data.seq || 0 });
             this.stop();
             return;

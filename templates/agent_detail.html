@@ -3033,6 +3033,7 @@ function updateBusyBadge(busy) {
 
 function _destroyCurrentTurn() {
     if (!_currentTurn) return;
+    console.warn('[_destroyCurrentTurn] hasStream=%s hasPollTimer=%s hasThinkingId=%s', !!_currentTurn.stream, !!_currentTurn.pollTimer, !!_currentTurn.thinkingId);
     if (_currentTurn.abortController) _currentTurn.abortController.abort();
     // Explicitly stop the SSEAdapter — chatUI.closeStream() is a no-op shim.
     // Without this, old adapters keep reconnecting from a stale _lastSeq,
@@ -3060,6 +3061,7 @@ function _destroyCurrentTurn() {
 }
 
 function setChatBusy(busy) {
+    console.warn('[setChatBusy] busy=%s _chatBusy=%s hasActiveStream=%s', busy, _chatBusy, chatUI.hasActiveStream());
     _chatBusy = busy;
     updateBusyBadge(busy);
     const input = document.getElementById('chat-input');
@@ -3422,12 +3424,15 @@ function pollForResponse(existingThinkingId) {
             const data = await res.json();
             const entries = data.entries || [];
             if (!entries.length) return;  // bubble already exists with spinner, just wait
+            console.warn('[pollForResponse] got %d entries afterTs=%s hasStream=%s _currentTurn=%s _finalRendered=%s',
+                entries.length, lastChatTs, chatUI.hasActiveStream(), !!_currentTurn, _currentTurn ? _currentTurn._finalRendered : 'n/a');
             const wasAtBottom = chatUI.isNearBottom(80);
             let gotFinal = false;
             for (const entry of entries) {
                 if (entry.ts <= lastChatTs) continue;
                 lastChatTs = entry.ts;
                 if (entry.type === 'final' || entry.type === 'error') {
+                    console.warn('[pollForResponse] found %s entry ts=%s contentLen=%d', entry.type, entry.ts, (entry.content||'').length);
                     chatUI.closeStream();
                     // SSE fallback: if SSE race-lost (agent finished before stream connected),
                     // the thinking bubble will be empty. Replay intermediates from JSONL history.
@@ -3483,6 +3488,7 @@ function pollForResponse(existingThinkingId) {
             }
             if (wasAtBottom) chatUI.scrollToBottom();
             if (gotFinal) {
+                console.warn('[pollForResponse] gotFinal=true _currentTurn=%s clearing pollTimer', !!_currentTurn);
                 clearInterval(_currentTurn.pollTimer);
                 _currentTurn.pollTimer = null;
                 setChatBusy(false);
