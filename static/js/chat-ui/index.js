@@ -269,7 +269,8 @@ export class ChatUI {
                 continue;
             }
             if (entry.type === 'system') {
-                this.appendMessage('system', entry.content || '');
+                const sysMeta = (entry.metadata && entry.metadata.slash_command) ? { metadata: { slash_command: true } } : {};
+                this.appendMessage('system', entry.content || '', sysMeta);
                 continue;
             }
         }

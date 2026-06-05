@@ -3333,7 +3333,7 @@ async function sendChat() {
             // /clear slash command — clear the UI and show confirmation as system message
             chatUI.removeThinkingIndicator(thinkingId);
             chatUI.clearContainer();
-            chatUI.appendMessage('system', data.response);
+            chatUI.appendMessage('system', data.response, { metadata: { slash_command: true } });
             thinkingId = null; if (_currentTurn) _currentTurn.thinkingId = null;
             chatUI.closeStream();
             await syncLastChatTs();
@@ -3342,7 +3342,7 @@ async function sendChat() {
             chatUI.removeThinkingIndicator(thinkingId);
             thinkingId = null; if (_currentTurn) _currentTurn.thinkingId = null;
             chatUI.closeStream();
-            chatUI.appendMessage('assistant', data.response);
+            chatUI.appendMessage('assistant', data.response, { metadata: { slash_command: true } });
             await syncLastChatTs();
         } else {
             // Non-buffered success: agent responded immediately.

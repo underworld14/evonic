@@ -514,6 +514,8 @@ export function buildMessageBubble(role, content, opts = {}, cfg = {}) {
         formatTimestamp = null,
     } = cfg;
 
+    const meta        = opts.metadata || {};
+    const isSlashCmd  = !!meta.slash_command;
     const isUser      = role === 'user';
     const isError     = role === 'error';
     const isSystem    = !isUser && !isError && role !== 'assistant' && /^\[system/i.test(content);
@@ -582,6 +584,14 @@ export function buildMessageBubble(role, content, opts = {}, cfg = {}) {
         $bubble = $('<div class="bg-orange-200 text-gray-600 border-gray-400 rounded-2xl px-4 py-2.5 text-sm break-words">');
         $bubble.append(_buildSysBalloon(sysTag, sysContent, 'text-gray-500', 'text-gray-400', 120));
 
+    } else if (isSlashCmd) {
+        // Slash command response — blue styling, visible to user only (not sent to LLM)
+        const rendered = typeof marked !== 'undefined'
+            ? sanitize(marked.parse(content || '')).replace(/<table/g, '<div class="table-wrapper"><table').replace(/<\/table>/g, '</table></div>')
+            : escape(content);
+        $bubble = $('<div class="chat-prose rounded-2xl px-4 py-2.5 text-sm break-words bg-blue-50 text-blue-800 border border-blue-200 dark:bg-blue-950 dark:text-blue-200 dark:border-blue-800">');
+        $bubble.attr('role', 'article');
+        $bubble.html(rendered);
     } else {
         // assistant: markdown with sanitizer
         const rendered = typeof marked !== 'undefined'
