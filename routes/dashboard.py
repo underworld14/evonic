@@ -225,7 +225,7 @@ def api_dashboard_sidebar():
     from backend.agent_runtime import agent_runtime
     from routes.agents import _sanitize_agents
 
-    agents = db.get_enabled_agents_sorted(limit=15)
+    agents = db.get_enabled_agents_sorted(limit=10)
 
     busy_agents = agent_runtime.get_busy_agents()
     for agent in agents:
