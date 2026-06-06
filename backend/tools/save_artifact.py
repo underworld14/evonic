@@ -79,8 +79,21 @@ def execute(agent: dict, args: dict) -> dict:
                     # Local or remote workplace: direct filesystem copy
                     shutil.copy2(source_path, filepath)
             else:
-                # Sandbox — no workplace: direct filesystem copy
-                shutil.copy2(source_path, filepath)
+                if sandbox_enabled:
+                    # Sandbox with no workplace: resolve path through execution backend
+                    from backend.tools.lib.exec_backend import registry as exec_registry
+                    session_id = agent.get('session_id', 'default')
+                    backend = exec_registry.get_backend(session_id, agent)
+                    container_path = backend.resolve_path(source_path) if hasattr(backend, 'resolve_path') else source_path
+                    if hasattr(backend, 'docker_cp_out'):
+                        result = backend.docker_cp_out(container_path, filepath)
+                        if 'error' in result:
+                            return {'error': f'Failed to copy from sandbox: {result["error"]}'}
+                    else:
+                        shutil.copy2(source_path, filepath)
+                else:
+                    # No workplace, no sandbox: direct filesystem copy
+                    shutil.copy2(source_path, filepath)
 
         else:
             # --- content mode: write text (UTF-8) ---
