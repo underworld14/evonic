@@ -580,26 +580,28 @@ def build_system_prompt(agent: Dict[str, Any]) -> str:
             artifacts_note = (
                 f"Your artifacts directory is: `{artifacts_path}`\n"
                 "Files you save here will appear in the Artifacts tab on your agent detail page.\n"
-                "Use `save_artifact` tool for text files, or write files directly to this path "
-                "using `write_file` or bash/runpy for binary files (PDFs, images).\n"
+                "Use `save_artifact(source_path=\"...\")` for files already on disk (binaries, images, PDFs) "
+                "or `save_artifact(content=\"...\")` for text generated in your response.\n"
                 "You can also access it via `/_self/artifacts/` with any file tool.\n\n"
                 f"**Artifact public URL**: `/api/agents/{aid}/artifacts/<filename>`\n"
                 "This URL serves the file directly in the browser (no download prompt for images).\n"
-                "To display an image inline in chat, save it via `save_artifact(mode=\"base64\")` "
+                "To display an image inline in chat, save it via `save_artifact(source_path=\"...\")` "
                 f"then embed in your markdown response: `<img src=\"/api/agents/{aid}/artifacts/filename.webp\" alt=\"...\">`\n\n"
                 "**Important**: `/_self/` paths only work with file tools (`read_file`, `write_file`, `patch`, `str_replace`) "
                 "— NOT with `bash` or `runpy`. When saving from bash/runpy, use the full workspace path "
-                f"`{artifacts_path}` or the `save_artifact` tool. For binary files from bash/runpy, always use `save_artifact(mode=\"base64\")`."
+                f"`{artifacts_path}` or the `save_artifact` tool."
             )
         else:
             artifacts_note = (
                 f"Your artifacts are served at: `/api/agents/{aid}/artifacts/<filename>`\n"
                 "Use the `save_artifact` tool to save files. "
+                "Use `save_artifact(source_path=\"...\")` for files already on disk (binaries, images) "
+                "or `save_artifact(content=\"...\")` for text generated in your response. "
                 "You can also access the directory via `/_self/artifacts/` with file tools.\n\n"
-                "To display an image inline in chat: save it via `save_artifact(mode=\"base64\")` "
+                "To display an image inline in chat: save it via `save_artifact(source_path=\"...\")` "
                 f"then embed in your markdown response: `<img src=\"/api/agents/{aid}/artifacts/filename.webp\" alt=\"...\">`\n\n"
                 "**Important**: `/_self/` paths only work with file tools (`read_file`, `write_file`, `patch`, `str_replace`) "
-                "— NOT with `bash` or `runpy`. For binary files, always use `save_artifact(mode=\"base64\")`."
+                "— NOT with `bash` or `runpy`."
             )
         prompt += "\n\n## Artifacts Directory\n" + artifacts_note
 
