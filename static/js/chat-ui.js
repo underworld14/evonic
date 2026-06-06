@@ -667,7 +667,7 @@ function buildMessageBubble(role, content, opts = {}, cfg = {}) {
         const rendered = typeof marked !== 'undefined'
             ? sanitize(marked.parse(content || '')).replace(/<table/g, '<div class="table-wrapper"><table').replace(/<\/table>/g, '</table></div>')
             : escape(content);
-        $bubble = $('<div class="chat-prose rounded-2xl px-4 py-2.5 text-sm break-words bg-blue-50 text-blue-800 border border-blue-200 dark:bg-blue-950 dark:text-blue-200 dark:border-blue-800">');
+        $bubble = $('<div class="chat-prose rounded-2xl px-4 py-2.5 text-sm break-words text-blue-800 border border-blue-200 dark:bg-blue-950 dark:text-blue-200 dark:border-blue-800">');
         $bubble.attr('role', 'article');
         $bubble.html(rendered);
         $bubble.find('img').each(function() { _wrapImageWithDownload($(this)); });
