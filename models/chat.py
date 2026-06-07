@@ -50,45 +50,31 @@ class AgentChatDB:
             agent_dir = os.path.join(AGENTS_DIR, agent_id)
         os.makedirs(agent_dir, exist_ok=True)
         self.db_path = os.path.join(agent_dir, 'chat.db')
-        self._tls_db = threading.local()
         self._init_tables()
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
-        """Context manager that returns a thread-local SQLite connection.
-        The connection persists for the thread's lifetime — it is NOT closed on exit.
-        PRAGMAs are set only once, on connection creation. Stale connections (from
-        dead threads) are detected with SELECT 1 and recreated.
-        Includes automatic transaction management (commit/rollback).
+        """Context manager that opens a SQLite connection and closes it on exit.
+
+        Unlike the main Database singleton (1 instance), AgentChatDB has 42+
+        instances (one per agent). Thread-local persistent connections here
+        cause file descriptor exhaustion (each WAL connection = 3 FDs).
         """
-        conn = getattr(self._tls_db, 'conn', None)
-        if conn is not None:
-            try:
-                conn.execute("SELECT 1")
-            except Exception:
-                conn = None
-
-        if conn is None:
-            conn = sqlite3.connect(f"file:{self.db_path}?mode=rwc&busy_timeout=10000", uri=True)
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA wal_autocheckpoint=1000")
-            conn.execute("PRAGMA cache_size=-8000")
-            conn.execute("PRAGMA mmap_size=268435456")
-            self._tls_db.conn = conn
-
-        with conn:
-            yield conn
+        conn = sqlite3.connect(f"file:{self.db_path}?mode=rwc&busy_timeout=10000", uri=True)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA wal_autocheckpoint=1000")
+        conn.execute("PRAGMA cache_size=-8000")
+        conn.execute("PRAGMA mmap_size=268435456")
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def close(self):
-        """Explicitly close the thread-local connection if it exists."""
-        conn = getattr(self._tls_db, 'conn', None)
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-            self._tls_db.conn = None
+        """No-op — connections are now closed after each use."""
+        pass
 
     def _init_tables(self):
         with self._connect() as conn:
