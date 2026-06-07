@@ -9,6 +9,7 @@ import sys
 import os
 import uuid
 import tempfile
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -40,7 +41,7 @@ def agent_id(tmp_path):
     db.db_path = str(tmp_path / f"{aid}_db.sqlite")
     # Nuke the thread-local cached connection so _connect() opens the new
     # path instead of reusing a stale handle pointing at the old path.
-    db._tlocal.conn = None
+    db._tls.conn = None
     db._init_tables()
 
     db.create_agent({'id': aid, 'name': 'Test Agent', 'system_prompt': 'You are a test bot.'})
@@ -51,7 +52,7 @@ def agent_id(tmp_path):
 
     # Teardown: restore the original path and clear the connection again
     # so the next test's fixture gets a clean slate.
-    db._tlocal.conn = None
+    db._tls.conn = None
     db.db_path = original_path
 
 
@@ -61,6 +62,8 @@ def chat_db(agent_id, tmp_path):
     chat = AgentChatDB.__new__(AgentChatDB)
     chat.agent_id = agent_id
     chat.db_path = str(tmp_path / f"{agent_id}_chat.db")
+    chat._conn = None
+    chat._lock = threading.Lock()
     chat._init_tables()
     # Inject into manager so db._chat_db(agent_id) finds it
     agent_chat_manager._dbs[agent_id] = chat
