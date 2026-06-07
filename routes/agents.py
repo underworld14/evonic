@@ -1860,7 +1860,8 @@ def api_agents_status_stream():
         data: {"agent_id": "...", "busy": true|false, "session_id": "..."}
 
         event: agent_turn_complete
-        data: {"agent_id": "...", "agent_name": "...", "response": "..."}
+        data: {"agent_id": "...", "agent_name": "...", "response": "...",
+               "external_user_id": "...", "session_id": "..."}
     """
     import queue as _queue
     from backend.event_stream import event_stream
@@ -1888,6 +1889,7 @@ def api_agents_status_stream():
                 'agent_name': data.get('agent_name', ''),
                 'response': response,
                 'session_id': data.get('session_id', ''),
+                'external_user_id': data.get('external_user_id', ''),
             }
             q.put_nowait(('turn', payload))
         except _queue.Full:
