@@ -34,7 +34,27 @@ def _match_with_unicode_fallback(content, old_str, new_str):
             reencoded_new = reencode_unicode_escapes(new_str)
             return reencoded_old, reencoded_new, occurrences
 
+    # Tier 3: quote normalization fallback
+    # LLM may receive smart-quotified read_file output (from normalize_llm_text)
+    # and copy it into old_str, but the file has straight quotes.
+    from backend.normalizer import normalize_code_quotes
+    norm_old = normalize_code_quotes(old_str)
+    if norm_old != old_str:
+        occurrences = content.count(norm_old)
+        if occurrences > 0:
+            norm_new = normalize_code_quotes(new_str)
+            return norm_old, norm_new, occurrences
+
     return old_str, new_str, 0
+
+
+def _close_match_hint(content, old_str):
+    """Return a suggestion string if a quote-normalized version would match."""
+    from backend.normalizer import normalize_code_quotes
+    norm = normalize_code_quotes(old_str)
+    if norm != old_str and norm in content:
+        return f" Did you mean: {norm!r}? (quotes were normalized from smart \u2192 straight)"
+    return ""
 
 
 def str_replace(file_path: str, old_str: str, new_str: str, count: int = 1) -> dict:
@@ -83,11 +103,13 @@ def str_replace(file_path: str, old_str: str, new_str: str, count: int = 1) -> d
     old_str, new_str, occurrences = _match_with_unicode_fallback(content, old_str, new_str)
 
     if occurrences == 0:
+        hint = _close_match_hint(content, old_str)
         return {
             'error': (
                 f"'old_str' not found in {file_path}. "
                 "Action: call read_file() to get the current file content "
                 "and copy the exact text you want to replace."
+                f"{hint}"
             )
         }
 
@@ -214,11 +236,13 @@ def execute(agent, args: dict) -> dict:
         old_str, new_str, occurrences = _match_with_unicode_fallback(content, old_str, new_str)
 
         if occurrences == 0:
+            hint = _close_match_hint(content, old_str)
             return {
                 'error': (
                     f"'old_str' not found in {display_path}. "
                     "Action: call read_file() to get the current file content "
                     "and copy the exact text you want to replace."
+                    f"{hint}"
                 )
             }
 
@@ -265,11 +289,13 @@ def execute(agent, args: dict) -> dict:
         old_str, new_str, occurrences = _match_with_unicode_fallback(content, old_str, new_str)
 
         if occurrences == 0:
+            hint = _close_match_hint(content, old_str)
             return {
                 'error': (
                     f"'old_str' not found in {display_path}. "
                     "Action: call read_file() to get the current file content "
                     "and copy the exact text you want to replace."
+                    f"{hint}"
                 )
             }
 

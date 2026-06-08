@@ -148,6 +148,7 @@ def _find_hunk_pos(lines: list, hunk_lines: list, stated_pos: int,
       2. Indent-tolerant match (all whitespace stripped) within ±SEARCH_WINDOW
       3. Indent-tolerant match across the entire file
       4. Unescape-tolerant match (handles LLM double-escaping like \\" → ")
+      5. Quote-normalized match (smart quotes → straight, from normalize_llm_text)
 
     `lines` may contain line endings or bare strings — both are handled.
 
@@ -215,6 +216,21 @@ def _find_hunk_pos(lines: list, hunk_lines: list, stated_pos: int,
                 for i in range(match_len)
             ):
                 return (pos, 'unescape')
+
+    # --- Tier 5: quote-normalized match (smart quotes → straight) ---
+    # LLM may receive smart-quotified read_file output (from normalize_llm_text)
+    # and emit patch context lines with smart quotes, but the file has straight quotes.
+    from backend.normalizer import normalize_code_quotes
+    match_qnorm = [normalize_code_quotes(txt).rstrip() for _, txt in to_match]
+    lines_qnorm = [normalize_code_quotes(l.rstrip('\r\n')).rstrip() for l in lines]
+    if (match_qnorm != [txt.rstrip() for _, txt in to_match] or
+            lines_qnorm != [l.rstrip('\r\n').rstrip() for l in lines]):
+        for pos in range(len(lines_qnorm) - match_len + 1):
+            if all(
+                lines_qnorm[pos + i] == match_qnorm[i]
+                for i in range(match_len)
+            ):
+                return (pos, 'quote_norm')
 
     return (-1, None)
 
@@ -299,6 +315,7 @@ def _apply_hunks_to_content(raw: str, patch_text: str) -> dict:
 
         # ── Apply the hunk ──
         needs_unescape = match_hint == 'unescape'
+        needs_quote_norm = match_hint == 'quote_norm'
         result_lines = []
         file_idx = pos
         for op, txt, _ in hunk_lines:
@@ -308,7 +325,13 @@ def _apply_hunks_to_content(raw: str, patch_text: str) -> dict:
             elif op == '-':
                 file_idx += 1
             elif op == '+':
-                result_lines.append(_unescape_llm(txt) if needs_unescape else txt)
+                if needs_quote_norm:
+                    from backend.normalizer import normalize_code_quotes
+                    result_lines.append(normalize_code_quotes(txt))
+                elif needs_unescape:
+                    result_lines.append(_unescape_llm(txt))
+                else:
+                    result_lines.append(txt)
 
         consumed = sum(1 for op, _, _ in hunk_lines if op in (' ', '-'))
         produced = sum(1 for op, _, _ in hunk_lines if op in (' ', '+'))
@@ -425,6 +448,7 @@ def apply_hunks(file_path: str, patch_text: str) -> dict:
 
         # ── Apply the hunk ─────────────────────────────────────────────────
         needs_unescape = match_hint == 'unescape'
+        needs_quote_norm = match_hint == 'quote_norm'
         result_lines = []
         file_idx = pos
         for op, txt, _ in hunk_lines:
@@ -434,7 +458,13 @@ def apply_hunks(file_path: str, patch_text: str) -> dict:
             elif op == '-':
                 file_idx += 1
             elif op == '+':
-                result_lines.append(_unescape_llm(txt) if needs_unescape else txt)
+                if needs_quote_norm:
+                    from backend.normalizer import normalize_code_quotes
+                    result_lines.append(normalize_code_quotes(txt))
+                elif needs_unescape:
+                    result_lines.append(_unescape_llm(txt))
+                else:
+                    result_lines.append(txt)
 
         consumed = sum(1 for op, _, _ in hunk_lines if op in (' ', '-'))
         produced = sum(1 for op, _, _ in hunk_lines if op in (' ', '+'))
