@@ -226,7 +226,7 @@ html.dark #plan-modal .recap-prose pre { background: #1e293b; }
                         <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16ZM8.28 7.22a.75.75 0 0 0-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 1 0 1.06 1.06L10 11.06l1.72 1.72a.75.75 0 1 0 1.06-1.06L11.06 10l1.72-1.72a.75.75 0 0 0-1.06-1.06L10 8.94 8.28 7.22Z" clip-rule="evenodd"/></svg>
                     </button>
                 </div>
-                <form onsubmit="sendReply(event)" class="flex gap-2">
+                <div class="flex gap-2">
                     <input type="file" id="file-input" class="hidden"
                            accept="image/*,.pdf,.txt,.md,.log,.json,.yaml,.yml,.xml,.csv,.tsv,.py,.js,.ts,.tsx,.jsx,.java,.go,.rs,.c,.cpp,.h,.rb,.php,.html,.css,.sql,.sh,.toml,.ini"
                            onchange="onFileSelected(this)">
@@ -234,10 +234,13 @@ html.dark #plan-modal .recap-prose pre { background: #1e293b; }
                             class="hidden p-2.5 text-gray-400 hover:text-indigo-500 transition-colors flex-shrink-0" title="Attach file">
                         <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                     </button>
-                    <input type="text" id="reply-input" placeholder="Type a reply as the bot..."
-                           class="flex-1 p-2.5 border border-gray-200 rounded-lg text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100">
-                    <button type="submit" id="reply-btn" class="px-4 py-2.5 bg-indigo-500 text-white rounded-lg text-sm font-medium hover:bg-indigo-600 transition-colors flex-shrink-0">Send</button>
-                </form>
+                    <textarea id="reply-input" placeholder="Type a reply as the bot..." rows="1"
+                           class="flex-1 p-2.5 border border-gray-200 rounded-lg text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 resize-none overflow-hidden"
+                           style="max-height: 150px;"
+                           onkeydown="chatInputKeydown(event)"
+                           oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,150)+'px';this.style.overflowY=this.scrollHeight>150?'auto':'hidden'"></textarea>
+                    <button type="button" id="reply-btn" onclick="doSendReply()" class="px-4 py-2.5 bg-indigo-500 text-white rounded-lg text-sm font-medium hover:bg-indigo-600 transition-colors flex-shrink-0">Send</button>
+                </div>
             </div>
         </div>
     </div>
@@ -1150,8 +1153,23 @@ function clearFileInput() {
 
 // ==================== Send Reply ====================
 
-async function sendReply(e) {
-    e.preventDefault();
+// Chat-input keydown handler: Enter submits on desktop, inserts newline on mobile.
+// Mobile = viewport < 1024px. Desktop = viewport >= 1024px.
+// Per-keypress check reacts immediately to resize / rotation.
+const CHAT_DESKTOP_BREAKPOINT = 1024;
+function chatInputKeydown(event) {
+    if (event.key !== 'Enter') return;
+    const isDesktop = window.innerWidth >= CHAT_DESKTOP_BREAKPOINT;
+    if (isDesktop && !event.shiftKey) {
+        // Desktop: Enter alone submits the message
+        event.preventDefault();
+        doSendReply();
+    }
+    // Mobile: Enter does nothing special — textarea handles newline natively.
+    // Shift+Enter on desktop: also falls through — textarea inserts newline natively.
+}
+
+async function doSendReply() {
     if (!currentSessionId) return;
     const $input = $('#reply-input');
     const text = $input.val().trim();
