@@ -604,18 +604,7 @@ def _builtin_update_tasks_factory(agent_context: dict):
     return tool_def, executor
 
 
-def _extract_tasks_from_markdown(content: str) -> list:
-    """Extract task items from markdown content for auto-populating AgentState.tasks."""
-    import re
-    tasks = []
-    for line in content.splitlines():
-        line = line.strip()
-        m = re.match(r'^(?:[-*]|\d+[.)]) \s*(?:\[.\]\s*)?(.+)$', line)
-        if m:
-            text = m.group(1).strip()
-            if text and not text.startswith('#'):
-                tasks.append(text)
-    return tasks
+
 
 
 def _builtin_save_plan_factory(agent_context: dict):
@@ -686,9 +675,6 @@ def _builtin_save_plan_factory(agent_context: dict):
 
         relative_path = f"plan/{filename}"
         ms.set_plan_file(relative_path)
-        extracted = _extract_tasks_from_markdown(content)
-        if extracted:
-            ms.update_tasks("set", tasks=extracted)
         return {
             "result": "Plan saved. Make sure to present this plan to user first.",
             "plan_file": relative_path
