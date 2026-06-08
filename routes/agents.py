@@ -533,6 +533,8 @@ def api_list_artifacts(agent_id):
     sort_param = request.args.get('sort', 'newest')
     query = (request.args.get('q', '') or '').strip().lower()
     type_filter = (request.args.get('type', '') or '').strip().lower()
+    page = request.args.get('page', 1, type=int)
+    limit = request.args.get('limit', 24, type=int)
     
     # File type category detection
     def _get_file_category(fname):
@@ -588,7 +590,19 @@ def api_list_artifacts(agent_id):
     else:  # newest
         files.sort(key=lambda f: f['modified'], reverse=True)
     
-    return jsonify({'files': files})
+    # Pagination
+    total = len(files)
+    pages = max(1, -(-total // limit))  # ceil division
+    start = (page - 1) * limit
+    files = files[start:start + limit]
+    
+    return jsonify({
+        'files': files,
+        'total': total,
+        'page': page,
+        'limit': limit,
+        'pages': pages,
+    })
 
 
 @agents_bp.route('/api/agents/<agent_id>/artifacts/<path:filename>', methods=['GET'])

@@ -590,7 +590,7 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
                     <input type="text" id="artifacts-search" placeholder="Search artifacts..." oninput="filterArtifacts()"
                         class="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100">
                 </div>
-                <select id="artifacts-sort" onchange="loadArtifacts()"
+                <select id="artifacts-sort" onchange="_artifactsPage=1; loadArtifacts()"
                     class="p-2 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100">
                     <option value="newest">Newest</option>
                     <option value="updated">Last Updated</option>
@@ -613,6 +613,32 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
             <!-- Artifacts Grid -->
             <div id="artifacts-grid" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
                 <!-- Artifacts loaded dynamically -->
+            </div>
+
+            <!-- Pagination Controls -->
+            <div id="artifacts-pagination" class="hidden flex items-center justify-between mt-4 pt-3 border-t border-gray-200 dark:border-gray-600">
+                <div class="text-sm text-gray-500 dark:text-gray-400">
+                    <span id="artifacts-pagination-info"></span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button id="artifacts-prev-btn" onclick="goArtifactPage('prev')"
+                        class="px-3 py-1.5 text-sm font-medium text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                        <span class="flex items-center gap-1">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                            Previous
+                        </span>
+                    </button>
+                    <div class="flex items-center gap-1" id="artifacts-page-buttons">
+                        <!-- Page buttons rendered dynamically -->
+                    </div>
+                    <button id="artifacts-next-btn" onclick="goArtifactPage('next')"
+                        class="px-3 py-1.5 text-sm font-medium text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                        <span class="flex items-center gap-1">
+                            Next
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                        </span>
+                    </button>
+                </div>
             </div>
 
             <!-- Empty State -->
@@ -3974,14 +4000,20 @@ document.addEventListener('keydown', function(e) {
 // ==================== Artifacts Tab ====================
 let _artifactsData = [];
 let _artifactsFilterType = 'all';
+let _artifactsPage = 1;
+let _artifactsPages = 1;
+let _artifactsTotal = 0;
 
 async function loadArtifacts() {
     const sort = document.getElementById('artifacts-sort').value;
     try {
-        const res = await fetch(`/api/agents/${AGENT_ID}/artifacts?sort=${sort}`);
+        const res = await fetch(`/api/agents/${AGENT_ID}/artifacts?sort=${sort}&page=${_artifactsPage}&limit=24`);
         const data = await res.json();
         _artifactsData = data.files || [];
+        _artifactsPages = data.pages || 1;
+        _artifactsTotal = data.total || 0;
         renderArtifacts();
+        renderArtifactPagination();
     } catch(e) {
         console.error('Failed to load artifacts:', e);
     }
@@ -4059,6 +4091,7 @@ function getArtifactIcon(category) {
 }
 
 function filterArtifacts() {
+    _artifactsPage = 1;
     renderArtifacts();
 }
 
@@ -4073,7 +4106,59 @@ function setArtifactFilter(type) {
             chip.classList.add('border-gray-300', 'text-gray-600', 'hover:bg-gray-50', 'dark:border-gray-600', 'dark:text-gray-400', 'dark:hover:bg-gray-700');
         }
     });
-    renderArtifacts();
+    _artifactsPage = 1;
+    loadArtifacts();
+}
+
+function renderArtifactPagination() {
+    const pagination = document.getElementById('artifacts-pagination');
+    const prevBtn = document.getElementById('artifacts-prev-btn');
+    const nextBtn = document.getElementById('artifacts-next-btn');
+    const info = document.getElementById('artifacts-pagination-info');
+    const pageButtons = document.getElementById('artifacts-page-buttons');
+
+    if (_artifactsPages <= 1) {
+        pagination.classList.add('hidden');
+        return;
+    }
+    pagination.classList.remove('hidden');
+
+    // Info text
+    info.textContent = `Showing page ${_artifactsPage} of ${_artifactsPages} (${_artifactsTotal} artifacts)`;
+
+    // Previous/Next buttons
+    prevBtn.disabled = _artifactsPage <= 1;
+    nextBtn.disabled = _artifactsPage >= _artifactsPages;
+
+    // Page number buttons
+    let pageHtml = '';
+    const maxButtons = 5;
+    let startPage = Math.max(1, _artifactsPage - Math.floor(maxButtons / 2));
+    let endPage = Math.min(_artifactsPages, startPage + maxButtons - 1);
+    if (endPage - startPage < maxButtons - 1) {
+        startPage = Math.max(1, endPage - maxButtons + 1);
+    }
+
+    for (let p = startPage; p <= endPage; p++) {
+        const active = p === _artifactsPage
+            ? 'bg-indigo-600 text-white border-indigo-600'
+            : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600';
+        pageHtml += `<button onclick="goArtifactPage(${p})" class="w-8 h-8 text-sm font-medium rounded-md border ${active} transition-colors">${p}</button>`;
+    }
+    pageButtons.innerHTML = pageHtml;
+}
+
+function goArtifactPage(target) {
+    if (target === 'prev') {
+        if (_artifactsPage <= 1) return;
+        _artifactsPage--;
+    } else if (target === 'next') {
+        if (_artifactsPage >= _artifactsPages) return;
+        _artifactsPage++;
+    } else {
+        _artifactsPage = target;
+    }
+    loadArtifacts();
 }
 
 function downloadArtifact(filename) {
