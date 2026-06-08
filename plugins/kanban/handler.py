@@ -2069,6 +2069,12 @@ def cli_kanban_update_task(task_id, title=None, description=None, status=None, p
         print(f"Error: Task #{tid} not found.")
         sys.exit(1)
 
+    # Guard: prevent assignee changes on done or archived tasks
+    if assignee is not None:
+        if task.get('status') == 'done' or task.get('archived_at'):
+            print("Error: Cannot change assignee on a completed or archived task.")
+            sys.exit(1)
+
     fields = {}
     if title is not None:
         fields['title'] = title

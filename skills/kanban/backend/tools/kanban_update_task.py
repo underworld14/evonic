@@ -80,6 +80,14 @@ def execute(agent: dict, args: dict) -> dict:
                 'message': 'You are not authorized to edit task details. Only the super agent can edit task title, description, or priority.',
             }
 
+    # Guard: prevent assignee changes on done or archived tasks
+    if new_assignee is not None:
+        if task.get('status') == 'done' or task.get('archived_at'):
+            return {
+                'status': 'error',
+                'message': 'Cannot change assignee on a completed or archived task.',
+            }
+
     # Build update fields
     fields = {'updated_at': _now()}
 

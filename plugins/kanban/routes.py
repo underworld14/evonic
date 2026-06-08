@@ -282,6 +282,11 @@ def create_blueprint():
         if not is_allowed:
             return jsonify({'error': error}), 403
 
+        # Guard: prevent assignee changes on done or archived tasks
+        if 'assignee' in data:
+            if task.get('status') == 'done' or task.get('archived_at'):
+                return jsonify({'error': 'Cannot change assignee on a completed or archived task.'}), 400
+
         updatable = ['title', 'description', 'status', 'priority', 'assignee', 'completed_at']
         fields = {k: data[k] for k in updatable if k in data}
 
