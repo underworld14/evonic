@@ -976,6 +976,13 @@ class AgentChatDB:
                 (memory_id,))
             conn.commit()
 
+    def clear_all_memories(self) -> int:
+        """Delete all memories. Returns the number of rows deleted."""
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM memories")
+            conn.commit()
+            return cursor.rowcount
+
 
 class AgentChatManager:
     """Manages per-agent AgentChatDB instances."""
