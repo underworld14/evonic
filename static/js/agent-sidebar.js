@@ -106,6 +106,8 @@ function renderSidebar(agents) {
         });
 
         avatar.addEventListener('mouseenter', function (e) {
+            // Skip tooltip popup on mobile — tap goes directly to agent detail
+            if (window.innerWidth <= 768) return;
             showTooltip(e, agent);
         });
 
