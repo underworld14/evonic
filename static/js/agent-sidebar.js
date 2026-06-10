@@ -30,6 +30,25 @@ function _sidebarAvatarColor(agentId) {
     return _AVATAR_COLORS[_sidebarHash(agentId) % _AVATAR_COLORS.length];
 }
 
+/**
+ * Navigate to an agent's chat tab. On agent detail pages softSwitchAgent()
+ * swaps the page in place without a full reload; everywhere else (and on
+ * soft-switch failure) fall back to a normal navigation.
+ */
+function _navigateToAgentChat(agentId) {
+    var dest = '/agents/' + encodeURIComponent(agentId) + '#chat';
+    if (typeof window.softSwitchAgent === 'function') {
+        // softSwitchAgent manages its own loading bar across the in-place swap
+        window.softSwitchAgent(agentId).then(function (ok) {
+            if (!ok) window.location = dest;
+        });
+    } else {
+        // Full navigation: show the bar until the new page replaces it
+        if (window.startNavProgress) window.startNavProgress();
+        window.location = dest;
+    }
+}
+
 /** Current tooltip element reference */
 var _currentTooltip = null;
 
@@ -83,7 +102,7 @@ function renderSidebar(agents) {
         }
 
         avatar.addEventListener('click', function () {
-            window.location = '/agents/' + encodeURIComponent(agent.id) + '#chat';
+            _navigateToAgentChat(agent.id);
         });
 
         avatar.addEventListener('mouseenter', function (e) {
@@ -259,7 +278,7 @@ function showBubblePopup(agentId, agentName, response, sessionId, externalUserId
             sessionStorage.setItem('evonic_last_session', bubbleSessionId);
             window.location = '/sessions';
         } else {
-            window.location = '/agents/' + encodeURIComponent(agentId) + '#chat';
+            _navigateToAgentChat(agentId);
         }
     });
 

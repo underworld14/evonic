@@ -170,6 +170,23 @@ header {
     border-bottom: 1px solid var(--border-color);
 }
 
+/* Thin top-loading bar — shows during agent soft-switch / navigation */
+#nav-progress-bar {
+    position: absolute;
+    bottom: -1px;
+    left: 0;
+    height: 3px;
+    width: 100%;
+    transform: scaleX(0);
+    transform-origin: left center;
+    background: linear-gradient(90deg, #6366f1, #818cf8);
+    box-shadow: 0 0 8px rgba(129, 140, 248, 0.6);
+    opacity: 0;
+    pointer-events: none;
+    z-index: 60;
+    will-change: transform, opacity;
+}
+
 .header-inner {
     max-width: 1600px;
     margin: 0 auto;

@@ -78,6 +78,12 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB
 from werkzeug.middleware.proxy_fix import ProxyFix
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
+# Response compression. COMPRESS_STREAMS must stay False so SSE endpoints
+# (/api/realtime/stream, chat streams) are never buffered by compression.
+from flask_compress import Compress
+app.config['COMPRESS_STREAMS'] = False
+Compress(app)
+
 app.register_blueprint(auth_bp)
 app.register_blueprint(agents_bp)
 app.register_blueprint(skills_bp)
@@ -452,6 +458,19 @@ def csrf_protect():
 
 
 @app.after_request
+def set_static_cache_headers(response):
+    """Long-lived caching for /static/ assets.
+
+    Safe because every static reference carries a `?v=N` cache-buster —
+    bump the version when an asset changes. Scoped to /static/ only so
+    dynamic responses (e.g. agent avatars) are never cached.
+    """
+    if request.path.startswith('/static/') and not config.DEBUG:
+        response.headers['Cache-Control'] = 'public, max-age=604800, immutable'
+    return response
+
+
+@app.after_request
 def set_csrf_cookie(response):
     """Ensure csrf_token cookie exists on every response (for login page, first visit, etc.)."""
     if 'csrf_token' not in request.cookies:
@@ -465,6 +484,11 @@ def set_csrf_cookie(response):
             max_age=604800,
         )
     return response
+
+
+# Set-once cache for the super-agent existence check (queried on every request).
+# Safe because a super agent can never be deleted or disabled once created.
+_super_agent_exists = False
 
 
 @app.before_request
@@ -501,7 +525,10 @@ def enforce_auth():
         return None
 
     # --- Setup flow: when no super agent exists, redirect everything else ---
-    if not db.has_super_agent():
+    global _super_agent_exists
+    if not _super_agent_exists:
+        _super_agent_exists = db.has_super_agent()
+    if not _super_agent_exists:
         if request.path.startswith('/api/'):
             return jsonify({'error': 'Super agent setup required', 'setup_required': True}), 503
         return redirect('/setup')

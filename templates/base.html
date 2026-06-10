@@ -25,9 +25,10 @@
     })();
     </script>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/tailwind.css') }}?v=3">
-    <script src="{{ url_for('static', filename='js/ui-toggle.js') }}?v=1"></script>
+    <script src="{{ url_for('static', filename='js/ui-toggle.js') }}?v=1" defer></script>
+    <!-- jQuery stays synchronous: inline body scripts call $() at parse time -->
     <script src="{{ url_for('static', filename='js/jquery-3.7.1.min.js') }}?v=1"></script>
-    <script src="{{ url_for('static', filename='js/lucide.min.js') }}?v=1"></script>
+    <script src="{{ url_for('static', filename='js/lucide.min.js') }}?v=1" defer></script>
     <script>
     // Init Lucide icons on DOM ready and expose refresh helper for dynamic content
     document.addEventListener('DOMContentLoaded', function() {
@@ -38,11 +39,11 @@
         lucide.createIcons();
     }
     </script>
-    <script src="{{ url_for('static', filename='js/marked.min.js') }}?v=1"></script>
-    <script src="{{ url_for('static', filename='js/ui-utils.js') }}?v=1"></script>
-    <script src="{{ url_for('static', filename='js/realtime.js') }}?v=1"></script>
-    <script src="{{ url_for('static', filename='js/approval-modal.js') }}?v=1"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=17">
+    <script src="{{ url_for('static', filename='js/marked.min.js') }}?v=1" defer></script>
+    <script src="{{ url_for('static', filename='js/ui-utils.js') }}?v=1" defer></script>
+    <script src="{{ url_for('static', filename='js/realtime.js') }}?v=1" defer></script>
+    <script src="{{ url_for('static', filename='js/approval-modal.js') }}?v=1" defer></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=18">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/recap-prose.css') }}?v=1">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/agent-sidebar.css') }}?v=7">
     <script>
@@ -144,7 +145,50 @@
                 <div id="ev-update-banner-actions" class="flex items-center shrink-0"></div>
             </div>
         </div>
+        <!-- Thin loading bar at the bottom edge of the navbar -->
+        <div id="nav-progress-bar"></div>
     </header>
+    <script>
+    // Top-loading bar (YouTube/GitHub style). startNavProgress() shows + trickles
+    // toward 90%; finishNavProgress() completes to 100% and fades out. Calling
+    // finish when inactive is a no-op, so it's safe to call from shared code paths.
+    (function () {
+        var trickleTimer = null, progress = 0, active = false;
+        function bar() { return document.getElementById('nav-progress-bar'); }
+        function set(p) {
+            var b = bar(); if (!b) return;
+            progress = p;
+            b.style.transform = 'scaleX(' + p + ')';
+        }
+        window.startNavProgress = function () {
+            var b = bar(); if (!b) return;
+            if (trickleTimer) { clearInterval(trickleTimer); trickleTimer = null; }
+            active = true;
+            b.style.transition = 'none';
+            b.style.opacity = '1';
+            set(0.08);
+            b.offsetWidth; // force reflow so the next change animates from 8%
+            b.style.transition = 'transform 0.2s ease';
+            set(0.3);
+            trickleTimer = setInterval(function () {
+                var next = progress + (0.9 - progress) * 0.12;
+                set(next > 0.9 ? 0.9 : next);
+            }, 400);
+        };
+        window.finishNavProgress = function () {
+            var b = bar(); if (!b || !active) return;
+            active = false;
+            if (trickleTimer) { clearInterval(trickleTimer); trickleTimer = null; }
+            b.style.transition = 'transform 0.2s ease';
+            set(1);
+            setTimeout(function () {
+                b.style.transition = 'opacity 0.3s ease';
+                b.style.opacity = '0';
+                setTimeout(function () { b.style.transition = 'none'; set(0); }, 300);
+            }, 200);
+        };
+    })();
+    </script>
 
     <div class="app-shell" style="display:flex">
         <aside id="agent-sidebar">
@@ -169,8 +213,9 @@
             </footer>
         </div>
     </div>
-    <script src="{{ url_for('static', filename='js/update-banner.js') }}?v=1"></script>
-    <script src="{{ url_for('static', filename='js/agent-sidebar.js') }}?v=3"></script>
-    <script>document.addEventListener('DOMContentLoaded', initSidebar);</script>
+    <script src="{{ url_for('static', filename='js/update-banner.js') }}?v=1" defer></script>
+    <script src="{{ url_for('static', filename='js/agent-sidebar.js') }}?v=4" defer></script>
+    <!-- Wrapped so the deferred agent-sidebar.js has defined initSidebar by DOMContentLoaded -->
+    <script>document.addEventListener('DOMContentLoaded', function () { initSidebar(); });</script>
 </body>
 </html>

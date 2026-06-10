@@ -57,6 +57,7 @@ class PluginManager:
         self._event_bridges: Dict[str, List[tuple]] = {}  # plugin_id -> [(event_name, bridge_fn)]
         self._blueprints: Dict[str, Any] = {}  # plugin_id -> Blueprint
         self._dashboard_cards: Dict[str, List[Tuple[str, Callable]]] = {}  # plugin_id -> [(card_id, fn)]
+        self._nav_cache: Optional[List[Dict[str, Any]]] = None  # memoized get_nav_items()
         self._load_all()
 
     def _is_plugin_enabled(self, plugin_id: str) -> bool:
@@ -66,6 +67,7 @@ class PluginManager:
 
     def _load_all(self):
         """Load handlers from all enabled plugins at startup."""
+        self._nav_cache = None
         self._handlers.clear()
         self._modules.clear()
         self._event_bridges.clear()
@@ -196,6 +198,7 @@ class PluginManager:
 
     def _unload_plugin(self, plugin_id: str):
         """Remove all handler registrations for a plugin."""
+        self._nav_cache = None  # covers reload (install/enable/disable) and uninstall
         self._modules.pop(plugin_id, None)
         prefix = f'plugin_pkg_{plugin_id}_'
         for key in [k for k in sys.modules if k == prefix[:-1] or k.startswith(prefix)]:
@@ -364,16 +367,24 @@ class PluginManager:
         return plugins
 
     def get_nav_items(self) -> List[Dict[str, Any]]:
-        """Return nav items declared by all enabled plugins."""
+        """Return nav items declared by all enabled plugins.
+
+        Memoized: called on every page render via a context processor, so
+        avoid re-scanning the plugins dir + DB each time. Invalidated on
+        plugin load/unload/reload.
+        """
+        if self._nav_cache is not None:
+            return self._nav_cache
         items = []
         for plugin in self.list_plugins():
-            if self._is_plugin_enabled(plugin['id']):
+            if plugin['enabled']:
                 for item in plugin.get('nav_items', []):
                     items.append({
                         'label': item.get('label', ''),
                         'path': item.get('path', ''),
                         'plugin_id': plugin['id'],
                     })
+        self._nav_cache = items
         return items
 
     def get_cli_commands(self) -> Dict[str, Any]:

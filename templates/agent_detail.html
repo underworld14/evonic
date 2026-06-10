@@ -137,7 +137,7 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
 </style>
 <div class="px-2 py-1 md:py-4 flex-1 min-h-0 flex flex-col h-[calc(100dvh-var(--header-h,56px))]">
     {% if workspace_invalid %}
-    <div class="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg px-4 py-3 mb-4 flex-shrink-0">
+    <div id="workspace-invalid-banner" class="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg px-4 py-3 mb-4 flex-shrink-0">
         <div class="flex items-start gap-3">
             <svg class="w-5 h-5 text-amber-500 dark:text-amber-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86l-8.6 14.86A1 1 0 002.56 20h18.88a1 1 0 00.87-1.5l-8.6-14.86a1 1 0 00-1.74 0z"/>
@@ -160,9 +160,9 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
             <a href="/agents" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors">
                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
             </a>
-            <h2 class="text-xl font-bold text-gray-800 dark:text-gray-100">{{ agent.name }}</h2>
+            <h2 id="agent-header-name" class="text-xl font-bold text-gray-800 dark:text-gray-100">{{ agent.name }}</h2>
             {% if not agent.is_super %}
-            <span class="text-xs text-gray-400 bg-gray-100 dark:bg-gray-700 dark:text-gray-400 px-2 py-0.5 rounded font-mono">{{ agent.id }}</span>
+            <span id="agent-header-id-badge" class="text-xs text-gray-400 bg-gray-100 dark:bg-gray-700 dark:text-gray-400 px-2 py-0.5 rounded font-mono">{{ agent.id }}</span>
             {% endif %}
         </div>
         {% if not agent.is_super %}
@@ -660,7 +660,7 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
                 <div class="flex justify-between items-center p-4 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
                     <h3 id="chatPanelTitle" class="text-base font-semibold text-gray-800 dark:text-gray-100 truncate max-w-[200px] sm:max-w-[320px] flex items-center gap-1.5">
                         <img id="agent-avatar-header" src="/api/agents/{{ agent.id }}/avatar" alt="" class="w-6 h-6 rounded-full object-cover bg-indigo-50 dark:bg-indigo-900/20 flex-shrink-0" onerror="this.style.display='none'">
-                        <span class="truncate">{{ agent.name }}</span>
+                        <span id="chat-panel-agent-name" class="truncate">{{ agent.name }}</span>
                         <span id="homeWorkplaceBadge" class="hidden"></span>
                     </h3>
                     <div class="flex gap-3 items-center">
@@ -1211,8 +1211,8 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
     </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/chat-ui.js') }}?v=43"></script>
-<script src="{{ url_for('static', filename='js/agent-state.js') }}?v=3"></script>
+<script src="{{ url_for('static', filename='js/chat-ui.js') }}?v=43" defer></script>
+<script src="{{ url_for('static', filename='js/agent-state.js') }}?v=3" defer></script>
 <script>
 function showToast(message, type = 'success') {
     const container = document.getElementById('toast-container');
@@ -1233,8 +1233,13 @@ function showToast(message, type = 'success') {
 }
 </script>
 <script>
-const AGENT_ID = '{{ agent.id }}';
-const ENABLE_AGENT_STATE = {{ 'true' if agent.enable_agent_state else 'false' }};
+// AGENT_ID/ENABLE_AGENT_STATE are mutable: softSwitchAgent() retargets the page
+// to another agent without a full reload. _agentEpoch invalidates in-flight
+// fetches that started before a switch.
+let AGENT_ID = '{{ agent.id }}';
+let ENABLE_AGENT_STATE = {{ 'true' if agent.enable_agent_state else 'false' }};
+window._agentEpoch = 0;
+window._softSwitched = false;
 const ORIGINAL_WORKSPACE = '{{ agent.workspace or '' }}';
 let currentEditFile = null;
 let agentTools = [];
@@ -1242,16 +1247,17 @@ let chatLoaded = false;
 
 // --- Chat input draft persistence (localStorage) ---
 (function() {
-    const DRAFT_KEY = 'chat_draft_' + AGENT_ID;
+    // Computed per call so drafts stay per-agent across soft switches
+    function draftKey() { return 'chat_draft_' + AGENT_ID; }
 
     function saveDraft() {
         const input = document.getElementById('chat-input');
         if (!input) return;
         const val = input.value;
         if (val.trim()) {
-            try { localStorage.setItem(DRAFT_KEY, val); } catch(e) { /* quota exceeded, ignore */ }
+            try { localStorage.setItem(draftKey(), val); } catch(e) { /* quota exceeded, ignore */ }
         } else {
-            try { localStorage.removeItem(DRAFT_KEY); } catch(e) {}
+            try { localStorage.removeItem(draftKey()); } catch(e) {}
         }
     }
 
@@ -1259,7 +1265,7 @@ let chatLoaded = false;
         const input = document.getElementById('chat-input');
         if (!input) return;
         try {
-            const saved = localStorage.getItem(DRAFT_KEY);
+            const saved = localStorage.getItem(draftKey());
             if (saved && saved.trim()) {
                 input.value = saved;
                 // Trigger height auto-resize
@@ -1271,11 +1277,14 @@ let chatLoaded = false;
     }
 
     function clearDraft() {
-        try { localStorage.removeItem(DRAFT_KEY); } catch(e) {}
+        try { localStorage.removeItem(draftKey()); } catch(e) {}
     }
 
     // Expose clearDraft so sendChat() can call it
     window._clearChatDraft = clearDraft;
+    // Exposed for softSwitchAgent(): save old agent's draft / restore new agent's
+    window._saveChatDraft = saveDraft;
+    window._restoreChatDraft = restoreDraft;
 
     // Save on input
     document.addEventListener('DOMContentLoaded', function() {
@@ -1421,6 +1430,13 @@ $(document).on('click', '#compiled-prompt-modal', function (e) {
 });
 
 function showTab(name) {
+    // After a soft switch the Settings tab still holds the previous agent's
+    // server-rendered form — saving it would write stale values into the new
+    // agent. Do one real navigation to re-render it.
+    if (window._softSwitched && name === 'general') {
+        window.location.href = '/agents/' + encodeURIComponent(AGENT_ID) + '#general';
+        return;
+    }
     $('.tab-content').addClass('hidden');
     $('.tab-btn').removeClass('border-indigo-500 text-indigo-600')
                  .addClass('border-transparent text-gray-500');
@@ -2849,9 +2865,11 @@ let _chatSessionId = null;  // cached session_id for this user
 
 async function _getChatSessionId() {
     if (_chatSessionId) return _chatSessionId;
+    const epoch = window._agentEpoch;
     try {
         const res = await fetch(`/api/agents/${AGENT_ID}/chat/session?user_id=web_test`);
         const data = await res.json();
+        if (epoch !== window._agentEpoch) return null; // agent switched mid-fetch — don't cache
         _chatSessionId = data.session_id || null;
     } catch(e) { /* ignore */ }
     return _chatSessionId;
@@ -2938,6 +2956,7 @@ function _showChatLoadingSkeleton() {
 }
 
 async function loadChatHistory() {
+    const epoch = window._agentEpoch;
     _pollThinkingId = null;
     lastChatTs = 0;
     _showChatLoadingSkeleton();
@@ -2947,9 +2966,12 @@ async function loadChatHistory() {
         const res = await fetch(`/api/agents/${AGENT_ID}/chat?user_id=web_test&limit=50`);
         await sidPromise; // ensure cache is primed before restoreActiveReasoning runs
         const data = await res.json();
+        if (epoch !== window._agentEpoch) return; // agent switched mid-fetch — discard
         chatUI.clearContainer();
         chatUI.batchRender(() => renderEntries(data.entries || []));
     } catch(e) { /* ignore load errors */ }
+    if (epoch !== window._agentEpoch) return;
+    if (window.finishNavProgress) window.finishNavProgress(); // end soft-switch loading bar (no-op otherwise)
     chatLoaded = true;
     setTimeout(() => chatUI.scrollToBottom(), 50);
     if (!_chatBusy) startIdlePoll();
@@ -2957,6 +2979,7 @@ async function loadChatHistory() {
 }
 
 async function restoreActiveReasoning() {
+    const epoch = window._agentEpoch;
     try {
         // Use cached session_id — already fetched in loadChatHistory()
         const sessionId = await _getChatSessionId();
@@ -2966,6 +2989,7 @@ async function restoreActiveReasoning() {
         const eRes = await fetch(`/api/agents/${encodeURIComponent(AGENT_ID)}/chat/events?session_id=${encodeURIComponent(sessionId)}&after=0`);
         if (!eRes.ok || _chatBusy || _currentTurn) return; // bail if user sent a message while fetching
         const eData = await eRes.json();
+        if (epoch !== window._agentEpoch) return; // agent switched mid-fetch — discard
         if (_chatBusy || _currentTurn) return; // bail before touching shared state
         const events = eData.events || [];
         if (!events.length) return;
@@ -4727,21 +4751,133 @@ async function loadPortalWorkplaces() {
 
 <!-- ==================== Chat UI v2 init ==================== -->
 <script>
-$(function () {
-    window.chatUI = new window.ChatUI($('#chat-messages'), {
+// Builds against the current AGENT_ID — also used by softSwitchAgent()
+function _createChatUI() {
+    return new window.ChatUI($('#chat-messages'), {
         perspective: 'A',
         showTimestamps: false,
         userBubbleClass: 'bg-indigo-500 text-white dark:bg-indigo-800',
         assistantBubbleClass: 'bg-gray-200 text-gray-800 dark:bg-[#152A3A] border dark:border-[#1B394F] dark:text-gray-100',
-        agentAvatarUrl: '/api/agents/{{ agent.id }}/avatar',
-        agentId: '{{ agent.id }}',
+        agentAvatarUrl: '/api/agents/' + encodeURIComponent(AGENT_ID) + '/avatar',
+        agentId: AGENT_ID,
     });
+}
+
+$(function () {
+    window.chatUI = _createChatUI();
     showTab(window._tabInitHash || 'chat');
     try {
         if (localStorage.getItem('evonic-chat-fullscreen') === '1') {
             toggleChatFullscreenMode();
         }
     } catch(_) {}
+});
+</script>
+
+<!-- ==================== Soft agent switch ==================== -->
+<script>
+// Retarget this page to another agent without a full page load. Returns false
+// when the caller must fall back to a real navigation (structural mismatch,
+// fetch failure). Every tab except Settings re-fetches its data keyed on
+// AGENT_ID, so swapping identity + resetting chat state is sufficient;
+// Settings is server-rendered and triggers a real navigation via showTab().
+window.softSwitchAgent = async function (newId, opts = {}) {
+    if (newId === AGENT_ID) { showTab('chat'); return true; }
+
+    // Show the top-loading bar for the whole switch; finished once the new
+    // agent's chat history renders (end of loadChatHistory). On a fallback to
+    // full navigation the page reload clears the bar.
+    if (window.startNavProgress) window.startNavProgress();
+
+    let data;
+    try {
+        const res = await fetch('/api/agents/' + encodeURIComponent(newId));
+        if (!res.ok) return false;
+        data = await res.json();
+    } catch (e) { return false; }
+
+    // Structural guard: these flags change which tabs/panels were server-rendered.
+    const hasSkillsTab = !!document.querySelector('[data-tab="skills"]');
+    const hasArtifactsTab = !!document.querySelector('[data-tab="artifacts"]');
+    if (!!data.is_super === hasSkillsTab) return false; // skills tab exists only for non-super
+    if (!!data.artifacts_enabled !== hasArtifactsTab) return false;
+    if (!!data.enable_agent_state !== ENABLE_AGENT_STATE) return false;
+
+    // --- Teardown the current agent ---
+    window._agentEpoch++; // invalidates in-flight chat/session fetches
+    if (window._saveChatDraft) window._saveChatDraft(); // persists under the OLD agent's key
+    _destroyCurrentTurn();
+    stopIdlePoll();
+    updateBusyBadge(false); // _busyPollTimer refreshes for the new agent within 5s
+    const gearDd = document.getElementById('gear-dropdown');
+    if (gearDd) gearDd.classList.add('hidden');
+    if (_qrPollInterval) closeQRModal();
+    if (_cdPollInterval) closeChannelDetail();
+
+    // --- Swap identity + reset per-agent state ---
+    AGENT_ID = newId;
+    _chatSessionId = null;
+    chatLoaded = false;
+    lastChatTs = 0;
+    lastTurnEndTs = 0;
+    _chatBusy = false;
+    _pollThinkingId = null;
+    _planEditorFetchedFor = null;
+    _planEditorOriginal = null;
+    window.chatUI = _createChatUI();
+
+    // --- Update server-rendered header bits ---
+    const nameEl = document.getElementById('agent-header-name');
+    if (nameEl) nameEl.textContent = data.name || newId;
+    const idBadge = document.getElementById('agent-header-id-badge');
+    if (idBadge) idBadge.textContent = newId;
+    const chatName = document.getElementById('chat-panel-agent-name');
+    if (chatName) chatName.textContent = data.name || newId;
+    const avatarImg = document.getElementById('agent-avatar-header');
+    if (avatarImg) {
+        avatarImg.style.display = ''; // undo a previous onerror hide
+        avatarImg.src = '/api/agents/' + encodeURIComponent(newId) + '/avatar';
+    }
+    const toggleLabel = document.querySelector('#toggle-enabled-btn span');
+    if (toggleLabel) toggleLabel.textContent = data.enabled != 0 ? 'Disable' : 'Enable';
+    // The API can't recompute workspace validity — hide the banner; it
+    // reappears correctly on any full page load.
+    const wsBanner = document.getElementById('workspace-invalid-banner');
+    if (wsBanner) wsBanner.classList.add('hidden');
+
+    // Workplace select drives the chat connection overlay/status badge
+    const wpSel = document.getElementById('agent-workplace-id');
+    if (wpSel) {
+        wpSel.value = data.workplace_id || '';
+        updateWorkspaceVisibility();
+        pollWorkplaceStatus();
+        updateChatPanelTitle();
+    }
+
+    // Fresh chat input: clear the old agent's text, restore the new one's draft
+    const input = document.getElementById('chat-input');
+    if (input) { input.value = ''; input.style.height = 'auto'; }
+    if (window._restoreChatDraft) window._restoreChatDraft();
+    if (typeof dismissBubble === 'function') dismissBubble(newId);
+
+    // From popstate the browser already moved in history — pushing again would
+    // truncate the forward stack and duplicate entries.
+    if (!opts.fromHistory) {
+        history.pushState({agentId: newId}, '', '/agents/' + encodeURIComponent(newId) + '#chat');
+    }
+    window._softSwitched = true;
+    showTab('chat'); // chatLoaded=false → loads new agent's history/session/state
+    return true;
+};
+
+window.addEventListener('popstate', function () {
+    const m = location.pathname.match(/^\/agents\/([^\/]+)\/?$/);
+    if (!m) return;
+    const id = decodeURIComponent(m[1]);
+    if (id !== AGENT_ID) {
+        window.softSwitchAgent(id, {fromHistory: true}).then(function (ok) { if (!ok) location.reload(); });
+    }
+    // Hash-only history entries (tab switches) keep today's behavior: no-op here.
 });
 </script>
 
