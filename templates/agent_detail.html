@@ -523,7 +523,6 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
                 <!-- Dynamically populated -->
             </div>
             <div id="tools-empty" class="hidden text-center py-8 text-gray-400 text-sm">No tools found.</div>
-            <span id="tools-save-status" class="mt-2 inline-block text-sm text-green-600 hidden">Saved!</span>
         </div>
     </div>
 
@@ -2065,7 +2064,8 @@ function setFilterMode(mode) {
 async function toggleTool(toolId) {
     const tool = allToolsDefs.find(t => t.id === toolId);
     const fnName = tool ? ((tool.function || {}).name || tool.name || tool.id) : toolId;
-    if (isToolAssigned(toolId)) {
+    const wasAssigned = isToolAssigned(toolId);
+    if (wasAssigned) {
         // Remove by exact ID and bare function name (backward compat)
         assignedToolIds = assignedToolIds.filter(id => id !== toolId && id !== fnName);
     } else {
@@ -2079,24 +2079,43 @@ async function toggleTool(toolId) {
         assignedToolIds.push(toolId);
     }
     renderToolsList();
-    await saveToolsQuiet();
+    const ok = await saveToolsQuiet();
+    if (ok) {
+        const toolName = tool ? (tool.name || tool.id) : toolId;
+        showToast(`Tool '${toolName}' ${wasAssigned ? 'disabled' : 'enabled'}`, 'success');
+    }
 }
 
 async function removeOrphan(toolId) {
     assignedToolIds = assignedToolIds.filter(id => id !== toolId);
     renderToolsList();
-    await saveToolsQuiet();
+    const ok = await saveToolsQuiet();
+    if (ok) {
+        showToast(`Orphan tool '${toolId}' removed`, 'success');
+    }
 }
 
 async function saveToolsQuiet() {
-    await fetch(`/api/agents/${AGENT_ID}/tools`, {
-        method: 'PUT',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({tools: assignedToolIds})
-    });
-    const st = document.getElementById('tools-save-status');
-    st.classList.remove('hidden');
-    setTimeout(() => st.classList.add('hidden'), 1500);
+    try {
+        const res = await fetch(`/api/agents/${AGENT_ID}/tools`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({tools: assignedToolIds})
+        });
+        if (!res.ok) {
+            showToast('Failed to save tools', 'error');
+            return false;
+        }
+        const data = await res.json();
+        if (data.error) {
+            showToast(data.error, 'error');
+            return false;
+        }
+        return true;
+    } catch(e) {
+        showToast('Network error saving tools', 'error');
+        return false;
+    }
 }
 
 // ==================== Skills Tab ====================
