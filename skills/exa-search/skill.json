@@ -1,0 +1,18 @@
+{
+  "id": "exa-search",
+  "name": "Exa - Search Engine",
+  "version": "1.0.0",
+  "description": "Knowledge for using Exa — an AI-native search engine. The exa-py SDK provides web search, content retrieval, AI-generated answers, similar-page discovery, and structured JSON output.",
+  "brief": "You can use the Exa search engine for web search, content retrieval, and AI answers. Load this skill with `use_skill('exa-search')`.",
+  "author": "Robin Syihab",
+  "lazy_tools": true,
+  "variables": [
+    {
+      "name": "EXA_API_KEY",
+      "label": "Exa API Key",
+      "type": "string",
+      "default": "",
+      "description": "API key for Exa search engine authentication."
+    }
+  ]
+}
