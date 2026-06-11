@@ -534,6 +534,14 @@ class TelegramChannel(BaseChannel):
                     ) or None
                 from models.db import db
 
+                # Auto-populate display name from Telegram profile if not yet set.
+                # This ensures build_user_identity_context() can inject the user's
+                # Telegram name into the agent's LLM context on every turn.
+                if from_user and user_name:
+                    current_name = db.get_user_display_name(self.channel_id, user_id)
+                    if current_name == 'unknown' or current_name == user_id:
+                        db.set_user_display_name(self.channel_id, user_id, user_name)
+
                 # Step 1: Fully approved user? (in allowlist AND has name set)
                 if db.is_user_allowed(self.channel_id, user_id):
                     if db.needs_name(self.channel_id, user_id):
