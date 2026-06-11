@@ -16,6 +16,7 @@ Signals (POSIX):
 """
 
 import argparse
+import fcntl
 import json
 import logging
 import os
@@ -376,6 +377,9 @@ def _write_daemon_pid(app_root: str, pid: int) -> None:
     The CLI's ``evonic status`` and ``evonic stop`` read this file; without it
     they report the server as not running even when supervisor has a live
     daemon underneath.
+
+    Note: the exclusive file lock is acquired by the daemon itself (``app.py``)
+    at startup — the supervisor only probes the lock before spawning.
     """
     pid_file = _pid_file(app_root)
     try:
@@ -396,8 +400,38 @@ def _remove_daemon_pid(app_root: str) -> None:
         log.warning(f'Could not remove daemon PID file {pid_file}: {e}')
 
 
+def _probe_pid_lock(app_root: str) -> bool:
+    """Check if another instance already holds the exclusive lock on the PID file.
+
+    Returns True if the lock is free (no running instance), False otherwise.
+    """
+    pid_file = _pid_file(app_root)
+    try:
+        os.makedirs(os.path.dirname(pid_file), exist_ok=True)
+        fd = os.open(pid_file, os.O_CREAT | os.O_RDWR)
+    except OSError:
+        return True  # Can't determine — allow start
+
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Lock acquired (no competitor) — release immediately; the daemon
+        # will acquire its own lock when app.py starts.
+        os.close(fd)
+        return True
+    except IOError:
+        os.close(fd)
+        return False
+
+
 def start_daemon(release_path: str, app_root: str) -> tuple:
     """Start app.py from release_path using its venv. Returns (success, pid)."""
+    # Flock probe: if another evonic instance already holds the lock, bail
+    # before spawning a duplicate daemon.
+    if not _probe_pid_lock(app_root):
+        log.warning('Another Evonic server instance is already running — '
+                    'not starting daemon')
+        return False, 0
+
     if is_windows():
         python = os.path.join(release_path, '.venv', 'Scripts', 'python.exe')
     else:

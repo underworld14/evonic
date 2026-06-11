@@ -1,5 +1,6 @@
 """Evonic CLI commands — start, stop, status, plugin, and skill management."""
 
+import fcntl
 import os
 import shutil
 import signal
@@ -122,6 +123,41 @@ def _remove_pid():
         os.remove(PID_FILE)
 
 
+def _acquire_pid_lock():
+    """Acquire an exclusive file lock (flock) on the PID file.
+
+    The lock is held for the lifetime of the file descriptor. If another
+    instance already holds the lock, exit immediately to prevent a second
+    server process from starting.
+
+    Returns:
+        The open file descriptor, or ``None`` if daemon mode (caller should
+        not hold the lock — the child process will).
+    """
+    if not os.path.exists(PID_DIR):
+        os.makedirs(PID_DIR, exist_ok=True)
+
+    try:
+        fd = os.open(PID_FILE, os.O_CREAT | os.O_RDWR)
+    except OSError as e:
+        print(f"Error: Could not open PID file {PID_FILE}: {e}")
+        sys.exit(1)
+
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except IOError as e:
+        # EAGAIN or EWOULDBLOCK means another process holds the lock
+        os.close(fd)
+        existing_pid = _get_pid()
+        msg = f"Server is already running"
+        if existing_pid:
+            msg += f" (PID: {existing_pid})"
+        print(msg)
+        sys.exit(1)
+
+    return fd
+
+
 def start_server(port=None, host=None, debug=None, daemon=False):
     """Start the Flask server. Runs in foreground by default; use daemon=True to background."""
     # Check if setup is complete
@@ -130,9 +166,15 @@ def start_server(port=None, host=None, debug=None, daemon=False):
     #    print("Please run 'evonic setup' first to configure your platform.")
     #    sys.exit(1)
 
-    # Check if already running
+    # Acquire exclusive file lock — fail fast if another instance is running.
+    # For foreground mode the lock is held for the entire server lifetime.
+    # For daemon mode the child process (app.py) will acquire its own lock.
+    pid_lock_fd = _acquire_pid_lock()
+
+    # Check if already running (legacy PID check — redundant with flock but kept
+    # for backward compat and a friendlier error message).
     existing_pid = _get_pid()
-    if _is_running(existing_pid):
+    if existing_pid and _is_running(existing_pid):
         print(f"Server is already running (PID: {existing_pid})")
         try:
             import config
@@ -140,6 +182,7 @@ def start_server(port=None, host=None, debug=None, daemon=False):
             print(f"Port: {port or config.PORT}")
         except Exception:
             pass
+        os.close(pid_lock_fd)
         return
 
     # Import config to get defaults
@@ -171,6 +214,8 @@ def start_server(port=None, host=None, debug=None, daemon=False):
             )
             time.sleep(2)
             if _is_running(proc.pid):
+                # Release the lock — supervisor/daemon will acquire their own
+                os.close(pid_lock_fd)
                 print(f"Supervisor started (PID: {proc.pid})")
                 print(
                     f"Server will run from the current release with automatic self-update"
@@ -207,6 +252,8 @@ def start_server(port=None, host=None, debug=None, daemon=False):
 
         if _is_running(proc.pid):
             _write_pid(proc.pid)
+            # Release the lock — the child process (app.py) will acquire its own
+            os.close(pid_lock_fd)
             print(f"Server started in background (PID: {proc.pid})")
             print(f"Host: {host}")
             print(f"Port: {port}")
@@ -263,6 +310,10 @@ def start_server(port=None, host=None, debug=None, daemon=False):
         print("\nPlease run the setup:")
         print("  evonic setup")
         sys.exit(1)
+
+    # Write PID and keep the flock fd open — the lock is held for the entire
+    # server lifetime and released automatically by the OS on process exit.
+    _write_pid(os.getpid())
 
     print(EVONIC_BANNER)
 
