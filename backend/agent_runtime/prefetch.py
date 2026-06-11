@@ -94,6 +94,12 @@ class TurnPrefetcher:
 
             # Rebuild agent context
             assigned_tool_ids = db.get_agent_tools(db_agent_id)
+
+            # Agents with save_artifact automatically get list_artifacts.
+            # No DB assignment needed — every artifacts-enabled agent can search their files.
+            if 'save_artifact' in assigned_tool_ids and 'list_artifacts' not in assigned_tool_ids:
+                assigned_tool_ids.append('list_artifacts')
+
             fresh_agent_context = {
                 'id': agent_id,
                 'name': agent.get('name', ''),
