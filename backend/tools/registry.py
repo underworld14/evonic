@@ -49,7 +49,7 @@ class ToolRegistry:
         self._builtins['builtin:remember'] = _builtin_remember_factory
         self._builtins['builtin:recall'] = _builtin_recall_factory
         self._builtins['builtin:forget_memory'] = _builtin_forget_memory_factory
-        # Knowledge-graph memory tools (evobrain): synthesis + graph traversal
+        # Knowledge-graph memory tools (evomem): synthesis + graph traversal
         self._builtins['builtin:think'] = _builtin_think_factory
         self._builtins['builtin:graph_query'] = _builtin_graph_query_factory
         # Session recall tool

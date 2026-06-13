@@ -7,13 +7,13 @@ Extract→Deduplicate→Store→Retrieve pattern (inspired by Mem0):
 3. Store to per-agent SQLite memories table (FTS5-indexed, zero dependencies)
 4. Retrieve via FTS5 BM25 keyword search at context-build time
 
-Primary + fallback architecture (evobrain + FTS5):
-- When EVONIC_MEMORY_ENGINE=evobrain, evobrain is primary, FTS5 is fallback.
-- On any evobrain failure (timeout, binary missing, bad JSON), falls back to FTS5.
-- Dual-write: store_memory() writes to both systems when evobrain is enabled.
+Primary + fallback architecture (evomem + FTS5):
+- When EVONIC_MEMORY_ENGINE=evomem, evomem is primary, FTS5 is fallback.
+- On any evomem failure (timeout, binary missing, bad JSON), falls back to FTS5.
+- Dual-write: store_memory() writes to both systems when evomem is enabled.
 
 No new pip dependencies — uses existing LLM client, SQLite FTS5 (Python stdlib),
-and the evobrain static binary via subprocess.
+and the evomem static binary via subprocess.
 """
 
 import os
@@ -24,18 +24,18 @@ from typing import List, Optional
 
 from models.db import db
 from backend.llm_client import llm_client, strip_thinking_tags
-from backend.agent_runtime.evobrain_client import (
-    get_engine, search as evobrain_search, think as evobrain_think,
-    graph_query as evobrain_graph_query, init_brain as evobrain_init, vlog,
+from backend.agent_runtime.evomem_client import (
+    get_engine, search as evomem_search, think as evomem_think,
+    graph_query as evomem_graph_query, init_brain as evomem_init, vlog,
 )
-from backend.agent_runtime import evobrain_writer
+from backend.agent_runtime import evomem_writer
 
 logger = logging.getLogger(__name__)
 
 # Search modes per call-site (overridable via env). Passive injection favours
 # precision; explicit recall favours maximum recall from the weak hash embedder.
-_PASSIVE_SEARCH_MODE = os.environ.get("EVOBRAIN_SEARCH_MODE_PASSIVE", "conservative")
-_RECALL_SEARCH_MODE = os.environ.get("EVOBRAIN_SEARCH_MODE_RECALL", "tokenmax")
+_PASSIVE_SEARCH_MODE = os.environ.get("EVOMEM_SEARCH_MODE_PASSIVE", "conservative")
+_RECALL_SEARCH_MODE = os.environ.get("EVOMEM_SEARCH_MODE_RECALL", "tokenmax")
 
 # Memory categories that describe the user → linked to the canonical user entity
 # so the fact becomes graph-adjacent and feeds `think`.
@@ -118,19 +118,19 @@ Conversation summary:
 Return only the JSON object:"""
 
 
-def _try_evobrain_retrieval(agent_id: str, query: str, limit: int = 8) -> Optional[str]:
-    """Try to retrieve memories via evobrain hybrid search.
+def _try_evomem_retrieval(agent_id: str, query: str, limit: int = 8) -> Optional[str]:
+    """Try to retrieve memories via evomem hybrid search.
 
     Returns a formatted markdown string (matching the FTS5 format), or None
-    if evobrain is unavailable, disabled, or returns no results.
+    if evomem is unavailable, disabled, or returns no results.
     """
     engine = get_engine()
-    if engine != "evobrain":
+    if engine != "evomem":
         return None
     try:
-        result = evobrain_search(agent_id, query, limit, mode=_PASSIVE_SEARCH_MODE)
+        result = evomem_search(agent_id, query, limit, mode=_PASSIVE_SEARCH_MODE)
     except Exception:
-        logger.debug("evobrain search exception, falling back to FTS5")
+        logger.debug("evomem search exception, falling back to FTS5")
         return None
     if not result or not isinstance(result.get("hits"), list) or not result["hits"]:
         vlog("retrieve[%s]: 0 hits (mode=%s) -> FTS5 fallback",
@@ -138,7 +138,7 @@ def _try_evobrain_retrieval(agent_id: str, query: str, limit: int = 8) -> Option
         return None
     vlog("retrieve[%s]: %d hits (mode=%s)",
          agent_id, len(result["hits"]), _PASSIVE_SEARCH_MODE)
-    lines = ["## Memory (Evobrain)",
+    lines = ["## Memory (Evomem)",
              "Facts remembered from past conversations:"]
     for hit in result["hits"]:
         src = f"{hit.get('source_dir', '?')}/{hit.get('slug', '?')}"
@@ -149,36 +149,36 @@ def _try_evobrain_retrieval(agent_id: str, query: str, limit: int = 8) -> Option
     return "\n".join(lines)
 
 
-def _try_evobrain_store(agent_id: str, content: str, category: str,
+def _try_evomem_store(agent_id: str, content: str, category: str,
                         memory_id: int = None, session_id: str = None) -> bool:
-    """Dual-write a memory to evobrain as a STRUCTURED note page.
+    """Dual-write a memory to evomem as a STRUCTURED note page.
 
     Writes a `notes/` page (linked to the canonical `entities/user` for
     user-scoped facts so it becomes graph-adjacent), then schedules a debounced
     background sync. Returns True if the page was written.
     """
     engine = get_engine()
-    if engine != "evobrain":
+    if engine != "evomem":
         return False
     try:
         mentions = None
         if category in _USER_SCOPED:
-            evobrain_writer.upsert_entity_page(agent_id, "User",
+            evomem_writer.upsert_entity_page(agent_id, "User",
                                                entity_type="person", tags=["user"])
             mentions = ["entities/user"]
         title = f"{category}: {content[:70]}"
-        slug = evobrain_writer.write_note(
+        slug = evomem_writer.write_note(
             agent_id, title=title, body=content, tags=[category],
             mentions=mentions, memory_id=memory_id, source=session_id,
         )
         if slug:
             vlog("store[%s]: %s category=%s -> %s", agent_id,
                  ("user-linked" if mentions else "note"), category, slug)
-            evobrain_writer.mark_dirty(agent_id)
+            evomem_writer.mark_dirty(agent_id)
             return True
         return False
     except Exception:
-        logger.debug("evobrain structured store exception")
+        logger.debug("evomem structured store exception")
         return False
 
 
@@ -189,7 +189,7 @@ def _extract_and_store_graph(agent_id: str, summary: str,
     Best-effort, runs in the background extraction thread. Any failure is
     swallowed so flat FTS5/note storage is never affected.
     """
-    if get_engine() != "evobrain":
+    if get_engine() != "evomem":
         return
     try:
         prompt = _GRAPH_EXTRACT_PROMPT.format(summary=summary)
@@ -215,7 +215,7 @@ def _extract_and_store_graph(agent_id: str, summary: str,
             name = (ent.get("name") or "").strip()
             if not name:
                 continue
-            slug = evobrain_writer.upsert_entity_page(
+            slug = evomem_writer.upsert_entity_page(
                 agent_id, name, entity_type=ent.get("type", "entity"),
                 aliases=ent.get("aliases") or [],
             )
@@ -232,11 +232,11 @@ def _extract_and_store_graph(agent_id: str, summary: str,
             if not subj or not obj or not relation:
                 continue
             subj_slug = name_to_slug.get(subj.lower()) or \
-                evobrain_writer.upsert_entity_page(agent_id, subj)
+                evomem_writer.upsert_entity_page(agent_id, subj)
             obj_slug = name_to_slug.get(obj.lower()) or \
-                evobrain_writer.upsert_entity_page(agent_id, obj)
+                evomem_writer.upsert_entity_page(agent_id, obj)
             if subj_slug and obj_slug:
-                if evobrain_writer.add_edge(agent_id, subj_slug, relation, obj_slug,
+                if evomem_writer.add_edge(agent_id, subj_slug, relation, obj_slug,
                                             anchor=obj):
                     wrote_edge = True
 
@@ -244,11 +244,11 @@ def _extract_and_store_graph(agent_id: str, summary: str,
              len(name_to_slug), len(data.get("relations", []) or []),
              " (edges wired)" if wrote_edge else "")
         if name_to_slug or wrote_edge:
-            evobrain_writer.mark_dirty(agent_id)
+            evomem_writer.mark_dirty(agent_id)
     except (json.JSONDecodeError, KeyError, ValueError):
         return
     except Exception:
-        logger.debug("evobrain graph extraction exception (non-fatal)")
+        logger.debug("evomem graph extraction exception (non-fatal)")
         return
 
 
@@ -321,6 +321,16 @@ def _store_with_conflict_detection(agent_id: str, session_id: str, content: str,
 
     for old_id in superseded_ids:
         db.supersede_memory(agent_id, old_id, memory_id)
+
+    # Keep evomem consistent: drop superseded notes from disk so the stale
+    # fact stops surfacing via evomem. (delete_note is a no-op if absent.)
+    if superseded_ids and get_engine() == "evomem":
+        removed = False
+        for old_id in superseded_ids:
+            if evomem_writer.delete_note(agent_id, old_id):
+                removed = True
+        if removed:
+            evomem_writer.mark_dirty(agent_id)
 
     return {"id": memory_id, "dimension": dimension, "superseded": superseded_ids}
 
@@ -417,6 +427,13 @@ def extract_and_store_memories(agent: dict, session_id: str, summary: str,
                                 db.update_memory(agent_id, int(op['id']),
                                                  op['content'].strip(), op.get('category'),
                                                  dimension=dim)
+                                # Rewrite the evomem note so its content does
+                                # not drift from FTS5 (write_note upserts by id).
+                                if get_engine() == "evomem":
+                                    _try_evomem_store(
+                                        agent_id, op['content'].strip(),
+                                        op.get('category', 'general'),
+                                        memory_id=int(op['id']), session_id=session_id)
                         return  # dedup handled all facts
                 except (json.JSONDecodeError, KeyError, ValueError):
                     pass  # fall through to simple add
@@ -436,7 +453,7 @@ def get_memories_for_context(agent_id: str, messages: list,
     """Retrieve relevant memories for injection into the LLM context.
 
     Primary + fallback architecture:
-    1. If EVONIC_MEMORY_ENGINE=evobrain: try evobrain hybrid search first.
+    1. If EVONIC_MEMORY_ENGINE=evomem: try evomem hybrid search first.
        On any failure, transparently fall back to FTS5 pipeline.
     2. Otherwise: use FTS5 BM25 keyword search (existing behaviour).
 
@@ -445,12 +462,12 @@ def get_memories_for_context(agent_id: str, messages: list,
     try:
         query = _extract_last_user_query(messages)
 
-        # === Primary: evobrain ===
-        if get_engine() == "evobrain" and query:
-            evobrain_result = _try_evobrain_retrieval(agent_id, query, limit)
-            if evobrain_result:
-                return evobrain_result
-            logger.debug("evobrain retrieval returned nothing, falling back to FTS5")
+        # === Primary: evomem ===
+        if get_engine() == "evomem" and query:
+            evomem_result = _try_evomem_retrieval(agent_id, query, limit)
+            if evomem_result:
+                return evomem_result
+            logger.debug("evomem retrieval returned nothing, falling back to FTS5")
 
         # === Fallback: FTS5 ===
         memories: List[dict] = []
@@ -484,7 +501,7 @@ def store_memory(agent_id: str, session_id: str, content: str,
                  category: str = 'general') -> dict:
     """Directly store a memory with conflict detection. Used by the `remember` built-in tool.
 
-    When EVONIC_MEMORY_ENGINE=evobrain, also dual-writes to the agent's evobrain.
+    When EVONIC_MEMORY_ENGINE=evomem, also dual-writes to the agent's evomem.
     """
     content = content.strip()
     if not content:
@@ -497,15 +514,15 @@ def store_memory(agent_id: str, session_id: str, content: str,
             resp["superseded_ids"] = result['superseded']
             resp["result"] = f"Memory stored (superseded {len(result['superseded'])} older memory/ies)."
 
-        # Dual-write to evobrain (non-blocking, best-effort)
-        if get_engine() == "evobrain":
-            evobrain_ok = _try_evobrain_store(agent_id, content, category,
+        # Dual-write to evomem (non-blocking, best-effort)
+        if get_engine() == "evomem":
+            evomem_ok = _try_evomem_store(agent_id, content, category,
                                               memory_id=result['id'],
                                               session_id=session_id)
-            if evobrain_ok:
-                resp["evobrain"] = "stored"
+            if evomem_ok:
+                resp["evomem"] = "stored"
             else:
-                logger.debug("evobrain dual-write failed for agent %s", agent_id)
+                logger.debug("evomem dual-write failed for agent %s", agent_id)
 
         return resp
     except Exception as e:
@@ -515,19 +532,19 @@ def store_memory(agent_id: str, session_id: str, content: str,
 def search_memories(agent_id: str, query: str, limit: int = 10) -> dict:
     """Search memories by keyword. Used by the `recall` built-in tool.
 
-    Primary + fallback: tries evobrain first if configured, falls back to FTS5.
+    Primary + fallback: tries evomem first if configured, falls back to FTS5.
     """
     try:
-        # === Primary: evobrain ===
+        # === Primary: evomem ===
         engine = get_engine()
-        if engine == "evobrain":
-            evobrain_result = evobrain_search(agent_id, query, limit,
+        if engine == "evomem":
+            evomem_result = evomem_search(agent_id, query, limit,
                                               mode=_RECALL_SEARCH_MODE)
-            if evobrain_result and isinstance(evobrain_result.get("hits"), list):
-                hits = evobrain_result["hits"]
+            if evomem_result and isinstance(evomem_result.get("hits"), list):
+                hits = evomem_result["hits"]
                 if hits:
                     return {
-                        "engine": "evobrain",
+                        "engine": "evomem",
                         "memories": [
                             {"id": h.get("slug"),
                              "content": h.get("snippet") or h.get("title"),
@@ -565,11 +582,11 @@ def synthesize_memory(agent_id: str, query: str) -> dict:
     """Brain-layer synthesis over memory. Backs the `think` built-in tool.
 
     Returns composed facts (with citations) plus knowledge gaps. Falls back to
-    a plain keyword search when evobrain is unavailable or has nothing to say.
+    a plain keyword search when evomem is unavailable or has nothing to say.
     """
     try:
-        if get_engine() == "evobrain":
-            result = evobrain_think(agent_id, query, mode="balanced")
+        if get_engine() == "evomem":
+            result = evomem_think(agent_id, query, mode="balanced")
             if result and isinstance(result.get("facts"), list) and result["facts"]:
                 facts = [
                     {"fact": (f.get("lead") or f.get("title") or "").strip(),
@@ -581,7 +598,7 @@ def synthesize_memory(agent_id: str, query: str) -> dict:
                         if isinstance(g, dict) and g.get("message")]
                 vlog("think[%s]: %d facts, %d gaps for %r",
                      agent_id, len(facts), len(gaps), query[:60])
-                return {"engine": "evobrain", "query": query,
+                return {"engine": "evomem", "query": query,
                         "facts": facts, "gaps": gaps, "count": len(facts)}
         # Fallback: keyword search
         vlog("think[%s]: no synthesis -> keyword fallback for %r", agent_id, query[:60])
@@ -597,19 +614,19 @@ def graph_lookup(agent_id: str, entity: str, edge_type: str = None,
     Resolves a name/alias to a start slug via search, then follows typed edges.
     """
     try:
-        if get_engine() != "evobrain":
-            return {"error": "Knowledge graph is only available with the evobrain engine."}
+        if get_engine() != "evomem":
+            return {"error": "Knowledge graph is only available with the evomem engine."}
         start = (entity or "").strip()
         if not start:
             return {"error": "An entity name is required."}
         # Resolve a free-text name/alias to a page slug (skip if already a slug).
         if "/" not in start:
-            hit = evobrain_search(agent_id, start, limit=1, mode=_RECALL_SEARCH_MODE)
+            hit = evomem_search(agent_id, start, limit=1, mode=_RECALL_SEARCH_MODE)
             if hit and hit.get("hits"):
                 start = hit["hits"][0].get("slug", start)
         vlog("graph[%s]: traverse from %r (edge=%s hops=%d)",
              agent_id, start, edge_type or "*", hops)
-        result = evobrain_graph_query(agent_id, start, edge=edge_type, hops=hops)
+        result = evomem_graph_query(agent_id, start, edge=edge_type, hops=hops)
         if not result or not isinstance(result.get("edges"), list) or not result["edges"]:
             vlog("graph[%s]: no connections from %r", agent_id, start)
             return {"start": start, "edges": [], "count": 0,
@@ -668,12 +685,21 @@ def forget_memory(agent_id: str, memory_id: int, target_agent_id: str = None,
             }
 
         db.expire_memory(effective_agent_id, memory_id)
-        return {
+
+        # Keep evomem consistent: drop the structured note from disk and
+        # schedule a sync so the page is soft-deleted from the index. Without
+        # this the "forgotten" fact would still surface via evomem.
+        resp = {
             "result": "Memory forgotten.",
             "id": memory_id,
             "content": target_memory['content'],
             "category": target_memory['category'],
         }
+        if get_engine() == "evomem":
+            if evomem_writer.delete_note(effective_agent_id, memory_id):
+                evomem_writer.mark_dirty(effective_agent_id)
+                resp["evomem"] = "removed"
+        return resp
     except Exception as e:
         return {"error": f"Failed to forget memory: {e}"}
 
