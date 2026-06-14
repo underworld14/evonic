@@ -296,3 +296,129 @@ def get_evomem_db_mtime(agent_id: str) -> float:
         return os.stat(db_path).st_mtime
     except OSError:
         return 0.0
+
+
+def query_kb_graph(agent_id: str, filename: str) -> dict | None:
+    """Query evomem for a single KB page's 1-hop link graph.
+
+    Returns a dict with:
+      source: {slug, title, tags, updated_at}
+      outgoing: [{slug, title, updated_at}]
+      incoming: [{slug, title}]
+      outgoing_dangling: [slug]
+      same_tag_docs: [{slug, title, tags}]
+    Returns None if the brain DB does not exist or the page is not found.
+    """
+    import sqlite3
+    brain_dir = _get_brain_dir(agent_id)
+    db_path = os.path.join(brain_dir, ".evomem.db")
+    if not os.path.isfile(db_path):
+        vlog("query_kb_graph: brain DB not found at %s", db_path)
+        return None
+
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+
+        # Look up the source page
+        page_row = conn.execute(
+            "SELECT id, slug, title, tags, updated_at FROM pages "
+            "WHERE slug = ? AND page_type = 'kb' AND deleted_at IS NULL",
+            (filename,),
+        ).fetchone()
+
+        if not page_row:
+            conn.close()
+            return None
+
+        page_id = page_row["id"]
+        tags_raw = page_row["tags"] or "[]"
+        try:
+            source_tags = json.loads(tags_raw) if isinstance(tags_raw, str) else tags_raw
+            if not isinstance(source_tags, list):
+                source_tags = []
+        except (json.JSONDecodeError, TypeError):
+            source_tags = []
+
+        source = {
+            "slug": page_row["slug"],
+            "title": page_row["title"],
+            "tags": source_tags,
+            "updated_at": page_row["updated_at"],
+        }
+
+        # Outgoing resolved links
+        out_rows = conn.execute(
+            "SELECT dst.slug, dst.title, dst.updated_at FROM links l "
+            "JOIN pages dst ON l.dst_page_id = dst.id "
+            "WHERE l.src_page_id = ? AND dst.page_type = 'kb' AND dst.deleted_at IS NULL "
+            "ORDER BY dst.slug",
+            (page_id,),
+        ).fetchall()
+        outgoing = [
+            {"slug": r["slug"], "title": r["title"], "updated_at": r["updated_at"]}
+            for r in out_rows
+        ]
+
+        # Outgoing dangling links
+        dangling_rows = conn.execute(
+            "SELECT dst_slug FROM links "
+            "WHERE src_page_id = ? AND dst_page_id IS NULL "
+            "ORDER BY dst_slug",
+            (page_id,),
+        ).fetchall()
+        outgoing_dangling = [r["dst_slug"] for r in dangling_rows]
+
+        # Incoming links
+        in_rows = conn.execute(
+            "SELECT src.slug, src.title FROM links l "
+            "JOIN pages src ON l.src_page_id = src.id "
+            "WHERE l.dst_slug = ? AND l.dst_page_id IS NOT NULL "
+            "AND src.page_type = 'kb' AND src.deleted_at IS NULL "
+            "ORDER BY src.slug",
+            (filename,),
+        ).fetchall()
+        incoming = [{"slug": r["slug"], "title": r["title"]} for r in in_rows]
+
+        # Same-tag docs
+        same_tag_docs = []
+        if source_tags:
+            # Build OR conditions for each tag
+            placeholders = ",".join("?" for _ in source_tags)
+            tag_rows = conn.execute(
+                f"SELECT slug, title, tags FROM pages "
+                f"WHERE page_type = 'kb' AND deleted_at IS NULL AND slug != ? "
+                f"AND ({' OR '.join('tags LIKE ?' for _ in source_tags)}) "
+                f"ORDER BY slug",
+                [filename] + [f"%{t}%" for t in source_tags],
+            ).fetchall()
+            for r in tag_rows:
+                t_raw = r["tags"] or "[]"
+                try:
+                    t_list = json.loads(t_raw) if isinstance(t_raw, str) else t_raw
+                    if not isinstance(t_list, list):
+                        t_list = []
+                except (json.JSONDecodeError, TypeError):
+                    t_list = []
+                same_tag_docs.append({
+                    "slug": r["slug"],
+                    "title": r["title"],
+                    "tags": t_list,
+                })
+
+        conn.close()
+        vlog("query_kb_graph: %s -> %d outgoing, %d incoming, %d dangling, %d same-tag",
+             filename, len(outgoing), len(incoming), len(outgoing_dangling),
+             len(same_tag_docs))
+        return {
+            "source": source,
+            "outgoing": outgoing,
+            "incoming": incoming,
+            "outgoing_dangling": outgoing_dangling,
+            "same_tag_docs": same_tag_docs,
+        }
+
+    except Exception:
+        logger.warning("query_kb_graph failed for agent %s, file %s",
+                       agent_id, filename, exc_info=True)
+        return None
