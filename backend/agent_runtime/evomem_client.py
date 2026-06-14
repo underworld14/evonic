@@ -6,6 +6,8 @@ On any failure (timeout, non-zero exit, bad JSON, binary missing), returns
 None so callers can transparently fall back to the FTS5 pipeline.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import time
