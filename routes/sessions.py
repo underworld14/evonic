@@ -143,6 +143,10 @@ def api_list_sessions():
     exclude_test = request.args.get('exclude_test', '1') != '0'
     sessions, total = db.get_all_sessions(search=search, limit=limit, offset=offset,
                                           exclude_test=exclude_test)
+    # Tag sessions that are currently being processed by an agent
+    from backend.agent_runtime import agent_runtime
+    for s in sessions:
+        s['is_active'] = agent_runtime._is_busy(s['id'])
     return jsonify({'sessions': sessions, 'total': total})
 
 

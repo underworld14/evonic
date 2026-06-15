@@ -54,6 +54,13 @@ html.dark #mobile-agent-state-content .border-gray-100 { border-color: #374151 !
 #session-list .session-item .session-delete-btn { opacity: 0; transition: opacity 0.15s, color 0.15s; }
 #session-list .session-item:hover .session-delete-btn { opacity: 1; }
 #session-list .session-item .session-delete-btn:hover { color: #ef4444 !important; }
+/* Active session indicator — dark green gradient left-to-transparent */
+#session-list .session-item.session-active {
+    background: linear-gradient(to right, rgba(6, 78, 59, 0.28) 0%, rgba(6, 78, 59, 0.12) 40%, transparent 100%);
+}
+html.dark #session-list .session-item.session-active {
+    background: linear-gradient(to right, rgba(6, 78, 59, 0.35) 0%, rgba(6, 78, 59, 0.15) 40%, transparent 100%);
+}
 /* User ID color coding by type */
 .user-id-system { color: #97989F; }
 .user-id-agent  { color: #97989F; }
@@ -619,14 +626,15 @@ function renderSessionList() {
         return;
     }
     list.innerHTML = allSessions.map(s => {
-        const active = s.id === currentSessionId ? 'bg-indigo-50 dark:bg-indigo-900/40 border-l-2 border-l-indigo-500' : 'border-l-2 border-l-transparent dark:border-l-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700';
+        const selected = s.id === currentSessionId ? 'bg-indigo-50 dark:bg-indigo-900/40 border-l-2 border-l-indigo-500' : 'border-l-2 border-l-transparent dark:border-l-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700';
+        const activeClass = s.is_active ? ' session-active' : '';
         const preview = s.last_message ? truncate(s.last_message, 50) : 'No messages';
         const prefixIcon = s.last_message_role === 'assistant' ? '<span class="text-indigo-400 mr-1">Bot:</span>' : '';
         const chBadge = channelBadge(s.channel_type);
         const botDot = s.bot_enabled ? '' : '<span class="inline-block w-1.5 h-1.5 rounded-full bg-red-400 ml-1" title="Bot disabled"></span>';
         const displayName = s.peer_agent_name ? [esc(s.agent_name || 'Unknown'), esc(s.peer_agent_name)].sort().join(' - ') : esc(s.agent_name || 'Unknown');
         return `
-        <div class="session-item relative p-3 cursor-pointer ${active} transition-colors border-b border-gray-200 dark:border-gray-700 last:border-b-0" onclick="selectSession('${s.id}')">
+        <div class="session-item relative p-3 cursor-pointer ${selected}${activeClass} transition-colors border-b border-gray-200 dark:border-gray-700 last:border-b-0" onclick="selectSession('${s.id}')">
             <div class="flex items-center gap-2 mb-1">
                 <span class="text-sm font-medium truncate ${userIdColorClass(s.external_user_id)}">${displayName}</span>
                 ${chBadge}${botDot}
@@ -732,7 +740,7 @@ async function selectSession(sessionId) {
         badge.className = 'text-xs px-2 py-0.5 rounded font-medium bg-purple-100 text-purple-700';
         badge.textContent = s.channel_type;
     } else {
-        badge.className = 'text-xs px-2 py-0.5 rounded font-medium bg-gray-100 text-gray-700';
+        badge.className = 'text-xs px-2 py-0.5 rounded font-medium bg-gray-100 dark:bg-gray-600 text-gray-700 dark:text-gray-200';
         badge.textContent = 'Web';
     }
 
@@ -1493,8 +1501,8 @@ function channelBadge(type) {
     if (type === 'telegram') return '<span class="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-600 font-medium">TG</span>';
     if (type === 'whatsapp') return '<span class="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-600 font-medium">WA</span>';
     if (type === 'discord') return '<span class="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-600 font-medium">DC</span>';
-    if (type) return `<span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 font-medium">${esc(type)}</span>`;
-    return '<span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-400 font-medium">Web</span>';
+    if (type) return `<span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-600 text-gray-500 dark:text-gray-200 font-medium">${esc(type)}</span>`;
+    return '<span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-600 text-gray-400 dark:text-gray-200 font-medium">Web</span>';
 }
 
 function timeAgo(ts) {
