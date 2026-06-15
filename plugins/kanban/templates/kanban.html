@@ -623,6 +623,7 @@ html.dark .drag-over { --tw-ring-color: rgb(99 102 241); background-color: rgb(4
         const moveButtons = getMoveButtons(task);
         const initials = task.assignee ? esc(task.assignee).split(/[\s._-]+/).filter(Boolean).map(s => s[0].toUpperCase()).slice(0, 2).join('') : '';
         const hasAssignee = !!(task.assignee);
+        const hasAvatar = hasAgentAvatar(task.assignee);
         const nUrl = task.assignee ? `/api/agents/${esc(task.assignee)}/avatar` : '';
         const agentTitle = task.assignee ? esc(getAgentName(task.assignee)) : '';
         const rocketBtn = task.status === 'todo' ? `<button class="text-[10px] px-1.5 py-0.5 rounded bg-orange-100 dark:bg-orange-900/40 text-orange-600 dark:text-orange-400 hover:bg-orange-200 dark:hover:bg-orange-900/50 transition" title="Trigger agent" onclick="handleTrigger(${task.id}, ${hasAssignee}, event)">🚀</button>` : '';
@@ -635,7 +636,10 @@ html.dark .drag-over { --tw-ring-color: rgb(99 102 241); background-color: rgb(4
                 <span class="text-[10px] font-semibold uppercase rounded px-1.5 py-0.5 ${pBadge}">${esc(task.priority || 'low')}</span>
                 ${rocketBtn}
                 ${(task.status === 'in-progress' || (task.status === 'done' && task.started_at)) ? `<span class="flex items-center gap-1 text-[10px] text-indigo-500 dark:text-indigo-400 mx-auto"><svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>${fmtDuration(task)}</span>` : ''}
-                ${task.assignee ? `<span class="ml-auto inline-flex items-center gap-0"><img src="${nUrl}" alt="" class="w-5 h-5 rounded-full object-cover" title="${agentTitle}" onerror="this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='inline-flex'"><span class="hidden items-center justify-center w-5 h-5 rounded-full text-[9px] font-semibold ${task.assignee === SUPER_AGENT_ID ? 'bg-red-100 dark:bg-red-900/50 text-red-600 dark:text-red-400' : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300'}" title="${agentTitle}">${initials}</span></span>` : ''}
+                ${task.assignee ? (hasAvatar
+                    ? `<span class="ml-auto inline-flex items-center gap-0"><img src="${nUrl}" alt="" class="w-5 h-5 rounded-full object-cover" title="${agentTitle}" onerror="this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='inline-flex'"><span class="hidden items-center justify-center w-5 h-5 rounded-full text-[9px] font-semibold ${task.assignee === SUPER_AGENT_ID ? 'bg-red-100 dark:bg-red-900/50 text-red-600 dark:text-red-400' : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300'}" title="${agentTitle}">${initials}</span></span>`
+                    : `<span class="ml-auto inline-flex items-center justify-center w-5 h-5 rounded-full text-[9px] font-semibold ${task.assignee === SUPER_AGENT_ID ? 'bg-red-100 dark:bg-red-900/50 text-red-600 dark:text-red-400' : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300'}" title="${agentTitle}">${initials}</span>`
+                ) : ''}
             </div>
             <div class="flex gap-1 pt-1.5 border-t border-gray-100 dark:border-gray-700 flex-wrap">
                 ${moveButtons}
@@ -1468,7 +1472,7 @@ html.dark .drag-over { --tw-ring-color: rgb(99 102 241); background-color: rgb(4
         const now = Date.now();
         if (!_agentCache || (now - _agentCacheTime) > 60000) {
             $.get('/api/kanban/eligible-agents', function(data) {
-                _agentCache = (data.agents || []).map(a => ({id: a.id, name: a.name || a.id}));
+                _agentCache = (data.agents || []).map(a => ({id: a.id, name: a.name || a.id, avatar_path: a.avatar_path}));
                 _agentCacheTime = now;
                 _renderTriggerAgents();
             }).fail(function() {
@@ -1490,9 +1494,12 @@ html.dark .drag-over { --tw-ring-color: rgb(99 102 241); background-color: rgb(4
 
         _triggerAgents = _agentCache;
         const html = _triggerAgents.map(function(agent) {
-            const avatarUrl = `/api/agents/${esc(agent.id)}/avatar`;
-            const fallbackSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" fill="none"><rect width="40" height="40" rx="20" fill="#e0e7ff"/><path d="M20 8a5 5 0 100 10 5 5 0 000-10zm-8 18.5a8 8 0 0116 0" fill="#4f46e5"/></svg>`;
-            return `<button onclick="selectTriggerAgent('${esc(agent.id)}')" class="flex flex-col items-center gap-2 p-3 rounded-lg border border-gray-200 dark:border-gray-600 dark:bg-gray-700 hover:bg-orange-50 hover:border-orange-200 dark:hover:bg-gray-600 dark:hover:border-orange-400 transition ${_triggerAgent === agent.id ? 'bg-orange-100 border-orange-400 dark:bg-orange-900 dark:border-orange-400' : ''}"><img src="${avatarUrl}" alt="${esc(agent.name)}" class="w-12 h-12 rounded-full object-cover bg-indigo-50 dark:bg-indigo-900/20" onerror="this.onerror=null;this.src='data:image/svg+xml,${encodeURIComponent(fallbackSvg)}'"><span class="text-xs text-gray-700 dark:text-gray-200 font-medium break-words text-center leading-tight">${esc(agent.name)}</span></button>`;
+            const initials = esc(agent.name).split(/[\s._-]+/).filter(Boolean).map(s => s[0].toUpperCase()).slice(0, 2).join('');
+            const hasAvatar = hasAgentAvatar(agent.id);
+            const avatarHtml = hasAvatar
+                ? `<img src="/api/agents/${esc(agent.id)}/avatar" alt="${esc(agent.name)}" class="w-12 h-12 rounded-full object-cover bg-indigo-50 dark:bg-indigo-900/20" onerror="this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='inline-flex'"><span class="hidden items-center justify-center w-12 h-12 rounded-full text-sm font-semibold bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300">${initials}</span>`
+                : `<span class="inline-flex items-center justify-center w-12 h-12 rounded-full text-sm font-semibold bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300">${initials}</span>`;
+            return `<button onclick="selectTriggerAgent('${esc(agent.id)}')" class="flex flex-col items-center gap-2 p-3 rounded-lg border border-gray-200 dark:border-gray-600 dark:bg-gray-700 hover:bg-orange-50 hover:border-orange-200 dark:hover:bg-gray-600 dark:hover:border-orange-400 transition ${_triggerAgent === agent.id ? 'bg-orange-100 border-orange-400 dark:bg-orange-900 dark:border-orange-400' : ''}">${avatarHtml}<span class="text-xs text-gray-700 dark:text-gray-200 font-medium break-words text-center leading-tight">${esc(agent.name)}</span></button>`;
         }).join('');
 
         $('#trigger-agent-list').html(html);
@@ -1645,7 +1652,7 @@ html.dark .drag-over { --tw-ring-color: rgb(99 102 241); background-color: rgb(4
         const now = Date.now();
         if (!_agentCache || (now - _agentCacheTime) > 60000) {
             $.get('/api/kanban/all-agents', function(data) {
-                _agentCache = (data.agents || []).map(a => ({id: a.id, name: a.name || a.id, has_kanban: a.has_kanban}));
+                _agentCache = (data.agents || []).map(a => ({id: a.id, name: a.name || a.id, has_kanban: a.has_kanban, avatar_path: a.avatar_path}));
                 _agentCacheTime = now;
                 _doPopulateAgentSelect(selector, selectedValue);
             }).fail(function() {
@@ -1662,6 +1669,12 @@ html.dark .drag-over { --tw-ring-color: rgb(99 102 241); background-color: rgb(4
         if (!agentId || !_agentCache) return agentId || '';
         const agent = _agentCache.find(a => a.id === agentId);
         return agent ? agent.name : agentId;
+    }
+
+    function hasAgentAvatar(agentId) {
+        if (!agentId || !_agentCache) return false;
+        const agent = _agentCache.find(a => a.id === agentId);
+        return !!(agent && agent.avatar_path);
     }
 
     function showAgentSkillWarning(selectId, warningId) {
@@ -1681,14 +1694,14 @@ html.dark .drag-over { --tw-ring-color: rgb(99 102 241); background-color: rgb(4
     function renderAssigneeWithAvatar(assignee) {
         if (!assignee) return '—';
         const agentName = getAgentName(assignee);
-        const avatarUrl = `/api/agents/${esc(assignee)}/avatar`;
         const initials = esc(assignee).split(/[\s._-]+/).filter(Boolean).map(s => s[0].toUpperCase()).slice(0, 2).join('');
         const isSuper = assignee === SUPER_AGENT_ID;
+        const hasAvatar = hasAgentAvatar(assignee);
+        const avatarHtml = hasAvatar
+            ? `<div class="relative inline-flex"><img src="/api/agents/${esc(assignee)}/avatar" alt="" class="w-10 h-10 rounded-full object-cover" title="${esc(assignee)}" onerror="this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='inline-flex'"><span class="hidden items-center justify-center w-10 h-10 rounded-full text-xs font-semibold ${isSuper ? 'bg-red-100 dark:bg-red-900/50 text-red-600 dark:text-red-400' : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300'}" title="${esc(assignee)}">${initials}</span></div>`
+            : `<span class="inline-flex items-center justify-center w-10 h-10 rounded-full text-xs font-semibold ${isSuper ? 'bg-red-100 dark:bg-red-900/50 text-red-600 dark:text-red-400' : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300'}" title="${esc(assignee)}">${initials}</span>`;
         return `<div class="flex flex-col items-start gap-1">
-            <div class="relative inline-flex">
-                <img src="${avatarUrl}" alt="" class="w-10 h-10 rounded-full object-cover" title="${esc(assignee)}" onerror="this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='inline-flex'">
-                <span class="hidden items-center justify-center w-10 h-10 rounded-full text-xs font-semibold ${isSuper ? 'bg-red-100 dark:bg-red-900/50 text-red-600 dark:text-red-400' : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300'}" title="${esc(assignee)}">${initials}</span>
-            </div>
+            ${avatarHtml}
             <span class="text-xs ${isSuper ? 'text-red-500 dark:text-red-400 font-semibold' : 'text-gray-600 dark:text-gray-400'}">${esc(agentName)}</span>
         </div>`;
     }
