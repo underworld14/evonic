@@ -50,7 +50,7 @@ class ChatDelegationMixin:
         session_id = self._chat_db(_db_id).get_or_create_session(
             agent_id, external_user_id, channel_id, channel_type=channel_type)
         self._refresh_session_count(_db_id)
-        self._sync_session_index(_db_id, session_id)
+        self._sync_session_index(agent_id, session_id)
         return session_id
 
     def get_session_messages(self, session_id: str, limit: int = 50,
@@ -89,7 +89,7 @@ class ChatDelegationMixin:
                 pass
             # Keep session_index in sync (message_count, last_message, last_message_role, updated_at).
             # Only user/assistant messages to avoid write amplification from tool calls.
-            self._sync_session_index(_db_id, session_id)
+            self._sync_session_index(agent_id, session_id)
         return result
 
     def touch_agent_active(self, agent_id: str) -> None:
