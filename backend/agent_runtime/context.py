@@ -642,6 +642,11 @@ def _build_static_prompt(agent: Dict[str, Any]) -> str:
         f"- `/_self/plan/` — your plan files\n"
         f"- `/_self/artifacts/` — your artifacts directory"
     )
+    parts.append(
+        "**Important**: `/_self/` paths only work with file tools "
+        "(`read_file`, `write_file`, `patch`, `str_replace`) — "
+        "NOT with `bash` or `runpy`."
+    )
 
     # Inform agents about portal virtual paths configured for them
     _portal_lines = _build_portal_info(eid)

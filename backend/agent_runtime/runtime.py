@@ -943,6 +943,10 @@ class AgentRuntime:
             if stderr:
                 parts.append(stderr)
             body = "\n".join(parts) if parts else "(no output)"
+        # Truncate output if it exceeds MAX_OUTPUT characters (both stdout+stderr).
+        MAX_OUTPUT = 1000
+        if len(body) > MAX_OUTPUT:
+            body = body[:MAX_OUTPUT] + "\n… (truncated)"
         response = f"$ {cmd}\n```bash\n{body}\n```"
         exit_code = result.get('exit_code')
         if exit_code not in (0, None):
