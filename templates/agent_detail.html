@@ -5220,6 +5220,7 @@ function saveSystemPromptFromModal() {
             saveBtn.classList.add('bg-indigo-600', 'hover:bg-indigo-700');
         }, 1500);
         showToast('System prompt saved!', 'success');
+        closeSystemPromptModal();
     })
     .catch(function(err) {
         saveBtn.textContent = originalText;
