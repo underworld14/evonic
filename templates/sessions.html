@@ -1383,7 +1383,10 @@ async function loadSessionSummary() {
                 const icon = icons[t.status] || '\u2610';
                 const color = iconColors[t.status] || 'text-gray-400';
                 const textClass = t.status === 'done' ? 'line-through text-gray-400 dark:text-gray-500' : 'text-gray-700 dark:text-gray-200';
-                planHtml += `<li class="flex items-start gap-1.5"><span class="${color} text-xs mt-0.5">${icon}</span><span class="${textClass} text-xs">${esc(t.text)}</span></li>`;
+                const active = t.status === 'in_progress';
+                const iconCls = `${color} text-xs mt-0.5${active ? ' inline-block animate-spin task-active-icon' : ''}`;
+                const textCls = active ? 'task-active-text text-xs' : `${textClass} text-xs`;
+                planHtml += `<li class="flex items-start gap-1.5"><span class="${iconCls}">${icon}</span><span class="${textCls}">${esc(t.text)}</span></li>`;
             }
             planHtml += '</ul></div>';
         }
