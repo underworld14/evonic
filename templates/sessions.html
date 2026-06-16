@@ -1041,14 +1041,26 @@ function connectSessionStream(sessionId, afterSeq = 0) {
         try { payload = JSON.parse(e.data); } catch(_) {}
 
         if (payload.slash_command && payload.response) {
-            // Slash command response — finalize any thinking bubble and display the response
+            // Slash command response — finalize any thinking bubble and display the response.
+            // Guard against duplicate: both POST callback and SSE 'done' can deliver this.
+            // Whichever fires first wins; the second silently skips the render.
+            const alreadyRendered = (
+                _pendingSlashResponse !== null &&
+                _pendingSlashResponse === payload.response
+            );
             const wasAtBottom = chatUI.isNearBottom(80);
             if (_sseThinkingId) {
                 chatUI.finalizeThinkingBubble(_sseThinkingId);
                 _sseThinkingId = null;
             }
-            chatUI.appendMessage('assistant', payload.response);
-            if (wasAtBottom) requestAnimationFrame(() => chatUI.scrollToBottom());
+            if (!alreadyRendered) {
+                // Not rendered yet — display the response and mark it so POST/poll skip it
+                chatUI.appendMessage('assistant', payload.response);
+                if (wasAtBottom) requestAnimationFrame(() => chatUI.scrollToBottom());
+                _pendingSlashResponse = payload.response;
+            }
+            // If alreadyRendered is true: POST handler already rendered + set _pendingSlashResponse.
+            // Leave _pendingSlashResponse as-is so the poll can still dedup the stored entry.
             _sseCompleted = true;
             // Reconnect so we're ready for the next incoming message
             es.close();
@@ -1253,12 +1265,15 @@ async function doSendReply() {
         clearFileInput();
         return;
     }
-    // Slash command response — display immediately, then suppress poll re-render
+    // Slash command response — display immediately, then suppress duplicate renders.
+    // Guard: if SSE already rendered it (race), skip to avoid double display.
     if (res.slash_command && res.response) {
         $input.val('');
         const wasAtBottom = chatUI.isNearBottom(80);
-        chatUI.appendMessage('assistant', res.response);
-        if (wasAtBottom) requestAnimationFrame(() => chatUI.scrollToBottom());
+        if (_pendingSlashResponse === null) {
+            chatUI.appendMessage('assistant', res.response);
+            if (wasAtBottom) requestAnimationFrame(() => chatUI.scrollToBottom());
+        }
         _pendingReplyText = null;
         _pendingSlashResponse = res.response;
         if (file) { _pendingFileUpload = true; clearFileInput(); }
