@@ -41,8 +41,9 @@ class AgentMixin:
                     vision_enabled, inject_agent_id, inject_datetime, send_intermediate_responses, enable_agent_state,
                     workspace, agent_messaging_enabled, sandbox_enabled, summarize_tail, artifacts_enabled,
                     message_wrapper_enabled, fallback_model_id, model_id, audio_enabled, video_enabled,
-                    run_as_user, bash_exec_enabled, vision_model_id, inter_agent_clear_context)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    run_as_user, bash_exec_enabled, vision_model_id, inter_agent_clear_context,
+                    builtin_tools_enabled)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 agent['id'], agent.get('name', agent['id']),
                 agent.get('description', ''), agent.get('system_prompt', ''),
@@ -69,6 +70,7 @@ class AgentMixin:
                 1 if agent.get('bash_exec_enabled', agent.get('is_super')) else 0,
                 agent.get('vision_model_id'),
                 1 if agent.get('inter_agent_clear_context') else 0,
+                1 if agent.get('builtin_tools_enabled', True) else 0,
             ))
             conn.commit()
         return agent['id']
@@ -84,7 +86,7 @@ class AgentMixin:
                    'attachments_enabled', 'attachment_max_size_mb', 'artifacts_enabled',
                    'fallback_model_id', 'audio_enabled', 'video_enabled',
                    'run_as_user', 'bash_exec_enabled', 'vision_model_id',
-                   'inter_agent_clear_context'}
+                   'inter_agent_clear_context', 'builtin_tools_enabled'}
         updates = {k: v for k, v in data.items() if k in allowed}
         if not updates:
             return False

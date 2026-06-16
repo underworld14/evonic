@@ -434,6 +434,15 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
                             </div>
                         </label>
                     </div>
+                    <div>
+                        <label class="flex items-center gap-3 cursor-pointer select-none">
+                            {{ toggle_widget(id='agent-builtin-tools', checked=(agent.builtin_tools_enabled if agent.builtin_tools_enabled is not none else True)) }}
+                            <div>
+                                <span class="text-gray-600 dark:text-gray-300 text-sm font-medium">Built-in Tools</span>
+                                <p class="text-xs text-gray-400 mt-0.5">Provide core tools (read, use_skill, set_mode, remember, recall, etc.). Disable to run this agent with only its assigned plugin tools — useful for minimal tool surface or testing.</p>
+                            </div>
+                        </label>
+                    </div>
 
                     <div>
                         <label class="flex items-center gap-3 cursor-pointer select-none">
@@ -1727,6 +1736,7 @@ async function saveAdvanced() {
             disable_turn_prefetch: document.getElementById('agent-prefetch').checked ? 1 : 0,
             agent_messaging_enabled: document.getElementById('agent-messaging-enabled').checked ? 1 : 0,
             inter_agent_clear_context: document.getElementById('agent-inter-agent-clear').checked ? 1 : 0,
+            builtin_tools_enabled: document.getElementById('agent-builtin-tools').checked ? 1 : 0,
             artifacts_enabled: document.getElementById('agent-artifacts').checked ? 1 : 0,
             safety_checker_enabled: document.getElementById('agent-safety-checker').checked ? 1 : 0,
             bash_exec_enabled: document.getElementById('agent-bash-exec').checked ? 1 : 0,
