@@ -240,13 +240,32 @@ _SQL_ENG = (r'(?!the\b|a\b|an\b|to\b|for\b|with\b|from\b|in\b|on\b|at\b|'
             r'concept\b|todo\b|module\b|old\b|unused\b|feature\b|version\b|'
             r'array\b|design\b|slow\b)')
 
+# _SQL_ENG_LOOSE is an expanded exclusion list used only by the loose TRUNCATE
+# pattern (without TABLE keyword).  It adds common programming and prose terms
+# that frequently follow "truncate" in natural language but are also plausible
+# table names.  The strict TRUNCATE TABLE pattern (with keyword) uses no
+# exclusion at all, so TRUNCATE TABLE <excluded_word> is always caught.
+_SQL_ENG_LOOSE = (r'(?!the\b|a\b|an\b|to\b|for\b|with\b|from\b|in\b|on\b|at\b|'
+                  r'by\b|of\b|is\b|was\b|are\b|be\b|it\b|this\b|that\b|and\b|or\b|'
+                  r'not\b|no\b|connection\b|support\b|list\b|file\b|code\b|output\b|'
+                  r'concept\b|todo\b|module\b|old\b|unused\b|feature\b|version\b|'
+                  r'array\b|design\b|slow\b|'
+                  r'response\b|data\b|content\b|text\b|string\b|result\b|message\b|'
+                  r'log\b|value\b|field\b|record\b|buffer\b|cache\b|config\b|memory\b|'
+                  r'history\b|lines\b|bytes\b|entry\b|info\b|debug\b|error\b|warning\b)')
+
 SQL_DESTRUCTIVE_PATTERNS: list[dict[str, Any]] = [
     # Data deletion — require SQL identifier after keyword
     {"pattern": r"\bDROP\s+TABLE\s+" + _SQL_ENG + _SQL_ID, "weight": 12, "category": "sql_destructive", "description": "DROP TABLE - permanently deletes a table"},
     {"pattern": r"\bDROP\s+DATABASE\s+" + _SQL_ENG + _SQL_ID, "weight": 15, "category": "sql_destructive", "description": "DROP DATABASE - permanently deletes entire database"},
     {"pattern": r"\bDROP\s+INDEX\s+" + _SQL_ENG + _SQL_ID, "weight": 10, "category": "sql_destructive", "description": "DROP INDEX - deletes a database index"},
     {"pattern": r"\bDROP\s+VIEW\s+" + _SQL_ENG + _SQL_ID, "weight": 10, "category": "sql_destructive", "description": "DROP VIEW - deletes a database view"},
-    {"pattern": r"\bTRUNCATE\s+(?:TABLE\s+)?" + _SQL_ENG + _SQL_ID, "weight": 12, "category": "sql_destructive", "description": "TRUNCATE - removes all rows from a table"},
+    # TRUNCATE: split into strict (requires TABLE keyword) and loose (TABLE
+    # optional with expanded exclusion list) to avoid false positives on
+    # programming prose like "truncate response" while still catching
+    # TRUNCATE TABLE <anything>.
+    {"pattern": r"\bTRUNCATE\s+TABLE\s+" + _SQL_ID, "weight": 12, "category": "sql_destructive", "description": "TRUNCATE TABLE - removes all rows from a table"},
+    {"pattern": r"\bTRUNCATE\s+" + _SQL_ENG_LOOSE + _SQL_ID, "weight": 8, "category": "sql_destructive", "description": "TRUNCATE (without TABLE keyword)"},
     {"pattern": r"\bDELETE\s+FROM\s+" + _SQL_ENG + _SQL_ID, "weight": 10, "category": "sql_destructive", "description": "DELETE FROM - deletes rows from a table"},
     {"pattern": r"\bALTER\s+TABLE\s+" + _SQL_ENG + _SQL_ID + r".*\bDROP\b", "weight": 12, "category": "sql_destructive", "description": "ALTER TABLE ... DROP - destructive schema change"},
 ]
