@@ -10,6 +10,7 @@ import time
 from flask import Blueprint, render_template, jsonify, request, send_file
 
 from models.db import db
+from backend.audit_logger import audit
 
 _logger = logging.getLogger(__name__)
 
@@ -310,6 +311,7 @@ def api_force_summarize(session_id):
 @sessions_bp.route('/api/sessions/<session_id>', methods=['DELETE'])
 def api_delete_session(session_id):
     result = db.delete_session(session_id)
+    audit.log_session(user_id='admin', session_id=session_id, action='delete', ip=request.remote_addr or '')
     return jsonify({'success': result})
 
 
@@ -318,6 +320,7 @@ def api_clear_all_sessions():
     """Delete all chat sessions, messages, summaries, and attachments
     across all agents."""
     db.clear_all_sessions()
+    audit.log_session(user_id='admin', session_id='*', action='clear_all', ip=request.remote_addr or '')
     return jsonify({'success': True})
 
 

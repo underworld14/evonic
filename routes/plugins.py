@@ -10,6 +10,7 @@ import zipfile
 from flask import Blueprint, render_template, jsonify, request, redirect, send_file
 from backend.plugin_manager import plugin_manager
 from backend.plugin_lifecycle import PLUGINS_DIR
+from backend.audit_logger import audit
 from backend.zip_validator import validate_upload_zip, MAX_UPLOAD_BYTES
 
 plugins_bp = Blueprint('plugins', __name__)
@@ -84,6 +85,9 @@ def api_upload_plugin():
             status = 409 if 'already installed' in result['error'] else 400
             return jsonify(result), status
         result.pop('_dir', None)
+        installed_id = result.get('id', '')
+        if installed_id:
+            audit.log_plugin(user_id='admin', plugin_id=installed_id, action='install', ip=request.remote_addr or '')
         return jsonify({'success': True, 'plugin': result})
     finally:
         os.unlink(tmp_path)
@@ -188,6 +192,7 @@ def api_delete_plugin(plugin_id):
     result = plugin_manager.uninstall_plugin(plugin_id)
     if 'error' in result:
         return jsonify(result), 400
+    audit.log_plugin(user_id='admin', plugin_id=plugin_id, action='uninstall', ip=request.remote_addr or '')
     return jsonify(result)
 
 

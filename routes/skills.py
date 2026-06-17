@@ -5,6 +5,7 @@ import tempfile
 from flask import Blueprint, render_template, jsonify, request, redirect, url_for
 from backend.skills_manager import skills_manager
 from backend.skillsets import list_skillsets, get_skillset, resolve_skillset, apply_skillset, update_skillset
+from backend.audit_logger import audit
 from backend.zip_validator import validate_upload_zip, MAX_UPLOAD_BYTES
 
 skills_bp = Blueprint('skills', __name__)
@@ -79,6 +80,9 @@ def api_upload_skill():
             status = 409 if 'already installed' in result['error'] else 400
             return jsonify(result), status
         result.pop('_dir', None)
+        installed_id = result.get('id', '')
+        if installed_id:
+            audit.log_skill(user_id='admin', skill_id=installed_id, action='install', ip=request.remote_addr or '')
         return jsonify({'success': True, 'skill': result})
     finally:
         os.unlink(tmp_path)
@@ -188,6 +192,7 @@ def api_delete_skill(skill_id):
     result = skills_manager.uninstall_skill(skill_id)
     if 'error' in result:
         return jsonify(result), 400
+    audit.log_skill(user_id='admin', skill_id=skill_id, action='uninstall', ip=request.remote_addr or '')
     return jsonify(result)
 
 

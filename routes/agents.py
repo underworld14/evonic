@@ -11,9 +11,13 @@ from typing import Dict, Any, List, Optional
 from flask import Blueprint, render_template, jsonify, request, Response, session, stream_with_context
 from models.db import db
 from models.chatlog import chatlog_manager, _DISPLAY_TYPES
+from backend.audit_logger import audit
 from backend.tools import tool_registry
 
 agents_bp = Blueprint('agents', __name__)
+
+def _audit_ip():
+    return request.remote_addr or ''
 
 _SENSITIVE_AGENT_KEYS = frozenset({'workspace'})
 
@@ -289,6 +293,7 @@ def api_create_agent():
 
         agent = db.get_agent(agent_id)
         agent['system_prompt'] = _read_system_prompt(agent_id, fallback=agent.get('system_prompt', ''))
+        audit.log_agent_crud(user_id='admin', agent_id=agent_id, action='create', ip=_audit_ip())
         return jsonify({'success': True, 'agent': _sanitize_agent(agent)})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -321,6 +326,7 @@ def api_update_agent(agent_id):
     db.update_agent(agent_id, data)
     agent = db.get_agent(agent_id)
     agent['system_prompt'] = _read_system_prompt(agent_id, fallback=agent.get('system_prompt', ''))
+    audit.log_agent_crud(user_id='admin', agent_id=agent_id, action='update', ip=_audit_ip())
     return jsonify({'success': True, 'agent': _sanitize_agent(agent)})
 
 
@@ -339,6 +345,7 @@ def api_delete_agent(agent_id):
     agent_dir = os.path.join(AGENTS_DIR, agent_id)
     if os.path.isdir(agent_dir):
         shutil.rmtree(agent_dir)
+    audit.log_agent_crud(user_id='admin', agent_id=agent_id, action='delete', ip=_audit_ip())
     return jsonify({'success': True})
 
 
@@ -394,6 +401,7 @@ def api_clone_agent(agent_id):
 
     agent = db.get_agent(cloned_id)
     agent['system_prompt'] = _read_system_prompt(cloned_id, fallback=agent.get('system_prompt', ''))
+    audit.log_agent_crud(user_id='admin', agent_id=agent_id, action='clone', ip=_audit_ip(), detail=f'cloned_to={cloned_id}')
     return jsonify({'success': True, 'agent': _sanitize_agent(agent)})
 
 
@@ -1675,6 +1683,22 @@ def api_chat_stream(agent_id):
     # This SSE thread will block for 30+s; without close() it leaks an FD.
     db.close()
 
+    # SSE connection limiting — max 5 concurrent per user/IP (FINDING-004)
+    from flask import session as _flask_session
+    from models.api_rate_limit import sse_register, sse_unregister, SSE_MAX_CONCURRENT
+    _sse_id = (
+        f"user:{_flask_session.get('_user_id', 'admin')}"
+        if _flask_session.get('authenticated')
+        else f"ip:{request.remote_addr or '0.0.0.0'}"
+    )
+    _sse_allowed, _sse_count = sse_register(_sse_id)
+    if not _sse_allowed:
+        return jsonify({
+            'error': 'too_many_sse_connections',
+            'message': f'Maximum {SSE_MAX_CONCURRENT} concurrent SSE connections allowed.',
+            'retry_after': 30,
+        }), 429, {'Retry-After': '30'}
+
     q = queue.Queue(maxsize=200)
 
     _SENTINEL = object()
@@ -1849,6 +1873,8 @@ def api_chat_stream(agent_id):
             event_stream.unregister_web_listener(session_id)
             for event_name, handler in handlers.items():
                 event_stream.off(event_name, handler)
+            # Unregister SSE connection (FINDING-004)
+            sse_unregister(_sse_id)
 
     return Response(
         stream_with_context(generate()),
@@ -1874,6 +1900,22 @@ def api_approvals_stream():
 
     # Release the thread-local DB connection acquired by enforce_auth.
     db.close()
+
+    # SSE connection limiting — max 5 concurrent per user/IP (FINDING-004)
+    from flask import session as _flask_session
+    from models.api_rate_limit import sse_register, sse_unregister, SSE_MAX_CONCURRENT
+    _sse_id = (
+        f"user:{_flask_session.get('_user_id', 'admin')}"
+        if _flask_session.get('authenticated')
+        else f"ip:{request.remote_addr or '0.0.0.0'}"
+    )
+    _sse_allowed, _sse_count = sse_register(_sse_id)
+    if not _sse_allowed:
+        return jsonify({
+            'error': 'too_many_sse_connections',
+            'message': f'Maximum {SSE_MAX_CONCURRENT} concurrent SSE connections allowed.',
+            'retry_after': 30,
+        }), 429, {'Retry-After': '30'}
 
     q = queue.Queue(maxsize=200)
 
@@ -1927,6 +1969,8 @@ def api_approvals_stream():
         finally:
             for event_name, handler in handlers.items():
                 event_stream.off(event_name, handler)
+            # Unregister SSE connection (FINDING-004)
+            sse_unregister(_sse_id)
 
     return Response(
         stream_with_context(generate()),
@@ -2071,6 +2115,22 @@ def api_agents_status_stream():
     # Release the thread-local DB connection acquired by enforce_auth.
     db.close()
 
+    # SSE connection limiting (max 5 concurrent per user/IP, FINDING-004)
+    from flask import session as _flsk_sess
+    from models.api_rate_limit import sse_register, sse_unregister, SSE_MAX_CONCURRENT
+    _sse_ident = (
+        'user:' + (_flsk_sess.get('_user_id', 'admin') if _flsk_sess.get('authenticated') else '')
+        if _flsk_sess.get('authenticated')
+        else 'ip:' + (request.remote_addr or '0.0.0.0')
+    )
+    _ok, _cnt = sse_register(_sse_ident)
+    if not _ok:
+        return jsonify({
+            'error': 'too_many_sse_connections',
+            'message': 'Maximum ' + str(SSE_MAX_CONCURRENT) + ' concurrent SSE connections allowed.',
+            'retry_after': 30,
+        }), 429, {'Retry-After': '30'}
+
     q = _queue.Queue(maxsize=200)
 
     def busy_handler(data):
@@ -2118,6 +2178,7 @@ def api_agents_status_stream():
         finally:
             event_stream.off('agent_busy_changed', busy_handler)
             event_stream.off('turn_complete', turn_handler)
+            sse_unregister(_sse_ident)
 
     return Response(
         stream_with_context(generate()),

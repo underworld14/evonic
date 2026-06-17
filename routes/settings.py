@@ -5,6 +5,7 @@ from typing import Dict, Any
 
 from flask import Blueprint, render_template, jsonify, request
 
+from backend.audit_logger import audit
 import config
 from models.db import db
 
@@ -13,6 +14,15 @@ _logger = logging.getLogger(__name__)
 settings_bp = Blueprint('settings', __name__)
 
 _SENSITIVE_MODEL_KEYS = frozenset({'api_key'})
+
+
+def _audit_setting_change(key, old_val, new_val):
+    """Log a setting change if old and new values differ."""
+    ip = request.remote_addr or ''
+    old_str = str(old_val)[:500] if old_val is not None else ''
+    new_str = str(new_val)[:500]
+    if old_str != new_str:
+        audit.log_setting_change(user_id='admin', key=key, old_value=old_str, new_value=new_str, ip=ip)
 
 
 def _sanitize_model(model: Dict[str, Any]) -> Dict[str, Any]:
@@ -486,7 +496,9 @@ def api_two_pass_enabled():
     if request.method == 'PUT':
         data = request.get_json() or {}
         enabled = '1' if data.get('enabled', False) else '0'
+        old_val = db.get_setting('two_pass_enabled', default)
         db.set_setting('two_pass_enabled', enabled)
+        _audit_setting_change('two_pass_enabled', old_val, enabled)
         return jsonify({'success': True, 'enabled': enabled == '1'})
     val = db.get_setting('two_pass_enabled', default)
     return jsonify({'enabled': val == '1'})
@@ -499,7 +511,9 @@ def api_public_history():
     if request.method == 'PUT':
         data = request.get_json()
         enabled = '1' if data.get('enabled', False) else '0'
+        old_val = db.get_setting('public_history', '0')
         db.set_setting('public_history', enabled)
+        _audit_setting_change('public_history', old_val, enabled)
         return jsonify({'success': True, 'enabled': enabled == '1'})
     val = db.get_setting('public_history', '0')
     return jsonify({'enabled': val == '1'})
@@ -511,7 +525,9 @@ def api_long_running_guard():
     from models.db import db
     data = request.get_json()
     enabled = '1' if data.get('enabled', True) else '0'
+    old_val = db.get_setting('long_running_guard_enabled', '1' if config.LONG_RUNNING_GUARD_ENABLED else '0')
     db.set_setting('long_running_guard_enabled', enabled)
+    _audit_setting_change('long_running_guard_enabled', old_val, enabled)
     return jsonify({'success': True, 'enabled': enabled == '1'})
 
 
@@ -521,7 +537,9 @@ def api_message_wrapper():
     from models.db import db
     data = request.get_json()
     enabled = '1' if data.get('enabled', True) else '0'
+    old_val = db.get_setting('message_wrapper_enabled', '1')
     db.set_setting('message_wrapper_enabled', enabled)
+    _audit_setting_change('message_wrapper_enabled', old_val, enabled)
     return jsonify({'success': True, 'enabled': enabled == '1'})
 
 
@@ -636,7 +654,9 @@ def api_events_dispatch():
     if request.method == 'PUT':
         data = request.get_json()
         enabled = '1' if data.get('enabled', True) else '0'
+        old_val = db.get_setting('events_dispatch_enabled', '1')
         db.set_setting('events_dispatch_enabled', enabled)
+        _audit_setting_change('events_dispatch_enabled', old_val, enabled)
         return jsonify({'success': True, 'enabled': enabled == '1'})
     val = db.get_setting('events_dispatch_enabled', '1')
     return jsonify({'enabled': val == '1'})
@@ -651,7 +671,9 @@ def api_theme():
         theme = data.get('theme', 'system')
         if theme not in ('light', 'dark', 'system'):
             theme = 'system'
+        old_val = db.get_setting('theme', 'system')
         db.set_setting('theme', theme)
+        _audit_setting_change('theme', old_val, theme)
         return jsonify({'success': True, 'theme': theme})
     val = db.get_setting('theme', 'system')
     return jsonify({'theme': val})
@@ -672,6 +694,11 @@ def api_task_classifier():
                 return jsonify({'success': False, 'error': 'Model not found'}), 404
         db.set_setting('task_classifier_enabled', enabled)
         db.set_setting('task_classifier_model_id', model_id)
+        old_enabled = db.get_setting('task_classifier_enabled', default_enabled)
+        old_model_id = db.get_setting('task_classifier_model_id', '')
+        _audit_setting_change('task_classifier_enabled', old_enabled, enabled)
+        if old_model_id != model_id:
+            _audit_setting_change('task_classifier_model_id', old_model_id, model_id)
         return jsonify({
             'success': True,
             'enabled': enabled == '1',
@@ -709,10 +736,13 @@ def api_set_default_model():
         return jsonify({'success': False, 'error': 'Model not found'}), 404
     
     try:
+        old_model = db.get_default_model()
+        old_id = old_model.get('id', '') if old_model else ''
         with db._connect() as conn:
             conn.execute("UPDATE llm_models SET is_default = 0")
             conn.execute("UPDATE llm_models SET is_default = 1 WHERE id = ?", (model_id,))
             conn.commit()
+        _audit_setting_change('default_model', old_id, model_id)
         return jsonify({'success': True, 'model': _sanitize_model(db.get_default_model())})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -1001,6 +1031,7 @@ def api_block_user(user_id):
     reason = data.get('reason', '')
     ok = db.block_user(user_id, reason=reason, actor_type='admin', actor_id='web_admin')
     if ok:
+        audit.log_user_management(user_id='admin', target_user=user_id, action='block', ip=request.remote_addr or '', detail=reason)
         return jsonify({'success': True, 'user_id': user_id})
     return jsonify({'error': 'User not found or already blocked'}), 404
 
@@ -1010,6 +1041,7 @@ def api_unblock_user(user_id):
     """Unblock a user by ID."""
     ok = db.unblock_user(user_id, actor_type='admin', actor_id='web_admin')
     if ok:
+        audit.log_user_management(user_id='admin', target_user=user_id, action='unblock', ip=request.remote_addr or '')
         return jsonify({'success': True, 'user_id': user_id})
     return jsonify({'error': 'User not found or not blocked'}), 404
 
