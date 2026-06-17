@@ -530,10 +530,34 @@ class UserMixin:
                 JOIN user_contacts uc ON uc.user_id = u.id
                 WHERE uc.channel_type = ? AND uc.external_user_id = ?
                   AND uc.deleted_at IS NULL AND u.deleted_at IS NULL
+                  AND u.is_approved != 2 AND u.blocked_at IS NULL
                 LIMIT 1
             """, (channel_type, external_user_id))
             row = cursor.fetchone()
             return self._row_to_dict(row)
+
+    def is_user_blocked_by_external_id(self, external_user_id: str) -> bool:
+        """Check if a user with the given external_user_id is blocked.
+        
+        Returns True if the user is blocked (is_approved == 2 or blocked_at IS NOT NULL),
+        False if the user is not found or is not blocked.
+        """
+        with self._connect() as conn:
+            conn.row_factory = self._row_factory
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT u.is_approved, u.blocked_at FROM users u
+                JOIN user_contacts uc ON uc.user_id = u.id
+                WHERE uc.external_user_id = ?
+                  AND uc.deleted_at IS NULL AND u.deleted_at IS NULL
+                LIMIT 1
+            """, (external_user_id,))
+            row = cursor.fetchone()
+            if row is None:
+                return False
+            is_approved = row['is_approved'] if isinstance(row, dict) else row[0]
+            blocked_at = row['blocked_at'] if isinstance(row, dict) else row[1]
+            return is_approved == 2 or blocked_at is not None
 
     def update_contact(self, contact_id: int, updates: dict,
                        actor_type: str = None, actor_id: str = None) -> bool:

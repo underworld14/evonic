@@ -1013,6 +1013,22 @@ class AgentRuntime:
         if not agent.get('is_super') and not agent.get('enabled', True):
             return {"response": "This agent is currently disabled.", "tool_trace": []}
 
+        # Defense-in-depth: check if the user is blocked (FINDING-012).
+        # Skip internal/system users (they have no user record to check).
+        if external_user_id not in ('__system__', '') and not external_user_id.startswith('__agent__'):
+            if db.is_user_blocked_by_external_id(external_user_id):
+                _logger.info(
+                    "[handle_message] agent=%s sender=%s BLOCKED — rejecting message.",
+                    agent_id, external_user_id,
+                )
+                return {
+                    "response": (
+                        "Your account has been suspended. "
+                        "Please contact the administrator for further information."
+                    ),
+                    "tool_trace": [],
+                }
+
         # Determine if this is a sub-agent (uses parent's per-agent chat DB)
         is_subagent = agent.get('is_subagent', False)
 
