@@ -214,7 +214,7 @@ class ChatDelegationMixin:
             return None
         return self._chat_db(agent_id).get_latest_agent_request_metadata(session_id, sender_agent_id)
 
-    def get_session_messages_full(self, session_id: str, agent_id: str = None, limit: int = 200, before_id: int = None) -> Tuple[List[Dict[str, Any]], bool]:
+    def get_session_messages_full(self, session_id: str, agent_id: str = None, limit: int = 200, before_id: Optional[int] = None) -> Tuple[List[Dict[str, Any]], bool]:
         agent_id = agent_id or self._find_agent_for_session(session_id)
         if not agent_id:
             return [], False

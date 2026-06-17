@@ -712,7 +712,7 @@ class AgentChatDB:
             row = cursor.fetchone()
             return dict(row) if row else None
 
-    def get_session_messages_full(self, session_id: str, limit: int = 200, before_id: int = None) -> Tuple[List[Dict[str, Any]], bool]:
+    def get_session_messages_full(self, session_id: str, limit: int = 200, before_id: Optional[int] = None) -> Tuple[List[Dict[str, Any]], bool]:
         """Get messages for a session with pagination support.
 
         When only 'limit' is provided, returns the N most recent messages.
