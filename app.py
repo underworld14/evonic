@@ -542,7 +542,7 @@ def set_csrf_cookie(response):
         response.set_cookie(
             'csrf_token', token,
             httponly=False,
-            samesite='Strict',
+            samesite='Lax',
             secure=not config.DEBUG,
             path='/',
             max_age=604800,

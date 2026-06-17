@@ -142,7 +142,7 @@ def login_submit():
     response.set_cookie(
         'csrf_token', csrf_token,
         httponly=False,       # JS must read this cookie
-        samesite='Strict',
+        samesite='Lax',
         secure=not config.DEBUG,
         path='/',
         max_age=604800,       # 7 days, matching session lifetime
