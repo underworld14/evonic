@@ -8,6 +8,10 @@ from typing import Any, Dict, List, Optional, Generator, Tuple
 AGENTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'agents')
 SUB_AGENTS_TMP_DIR = "/tmp/evonic-sub-agents"
 
+# Maximum number of messages fetchable in a single paginated request.
+# Prevents O(N) cost on sessions with thousands of messages.
+MAX_LIMIT = 500
+
 # Non-human session identifiers (agent-to-agent, scheduler, system notifications).
 _SYSTEM_EXTERNAL_USER_IDS = frozenset({'__scheduler__'})
 _SYSTEM_EXTERNAL_USER_PREFIXES = ('__agent__', '__system__')
@@ -722,6 +726,7 @@ class AgentChatDB:
             Tuple of (messages, has_more) where has_more is True if there are older messages
             that were not fetched.
         """
+        limit = max(1, min(limit, MAX_LIMIT))
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()

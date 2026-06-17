@@ -155,7 +155,9 @@ def api_get_session(session_id):
     session = db.get_session_with_details(session_id)
     if not session:
         return jsonify({'error': 'Session not found'}), 404
-    messages, has_more = db.get_session_messages_full(session_id, limit=200)
+    limit = request.args.get('limit', 200, type=int)
+    before_id = request.args.get('before_id', None, type=int)
+    messages, has_more = db.get_session_messages_full(session_id, limit=limit, before_id=before_id)
     return jsonify({'session': session, 'messages': messages, 'has_more': has_more})
 
 
