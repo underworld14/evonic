@@ -2071,128 +2071,70 @@ def _update_env_var(env_path, key, value):
 # ─── Update / Self-Update ──────────────────────────────────────────────────────
 
 
-def _load_supervisor_module():
-    """Import supervisor.py from the supervisor/ directory."""
-    sup_path = os.path.join(ROOT, "supervisor")
-    if sup_path not in sys.path:
-        sys.path.insert(0, sup_path)
-    import importlib
-
-    return importlib.import_module("supervisor")
-
-
-def _get_supervisor_pid():
-    """Read the running supervisor's PID, or None."""
-    sup_pid_file = os.path.join(ROOT, "supervisor", "run", "supervisor.pid")
-    if not os.path.exists(sup_pid_file):
-        return None
-    try:
-        with open(sup_pid_file) as f:
-            return int(f.read().strip())
-    except (ValueError, IOError):
-        return None
-
-
 def update_server(
     check_only=False, force=False, tag=None, rollback_flag=False, nightly=False
 ):
     """
-    Trigger or run a self-update.
+    Update evonic by pulling the latest from origin/main.
+
+    In the flat-repo architecture, the project root IS the live directory.
+    Updates are performed via git fetch + reset, which overwrites local
+    changes with the remote state.
 
     Modes:
-    - check_only: fetch tags, report what is available, no update applied
-    - rollback_flag: swap back to the previous release
-    - default: signal running supervisor (SIGUSR1) or run update inline
-    - tag: target a specific tag instead of latest
-    - nightly: fetch origin/main and run full update lifecycle (no tags)
+    - check_only: fetch and report current vs remote state, no update applied
+    - default: fetch origin/main and reset to it
     """
-    sup = _load_supervisor_module()
-    cfg_path = os.path.join(ROOT, "supervisor", "config.json")
-    cfg = sup.load_config(cfg_path)
-    app_root = cfg["app_root"]
 
-    # Update root project first to keep CLI/supervisor code up-to-date.
-    # Use fetch + reset instead of pull --ff-only so diverged branches
-    # don't block the update (the root project should always track remote).
-    print("Updating root project from origin/main...")
-    rc, _, err = sup._git(app_root, ['fetch', 'origin', 'main'])
-    if rc != 0:
-        print(f"Git fetch failed: {err}")
-        sys.exit(1)
-    rc, _, err = sup._git(app_root, ['reset', '--hard', 'FETCH_HEAD'])
-    if rc != 0:
-        print(f"Git reset failed: {err}")
-        sys.exit(1)
-    print("Root project updated.")
-
-    if rollback_flag:
-        print("Rolling back to previous release...")
-        ok = sup.rollback(app_root, cfg, None)
-        sys.exit(0 if ok else 1)
+    def _git(args):
+        """Run a git command in the project root."""
+        proc = subprocess.run(
+            ["git"] + args,
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
 
     if check_only:
-        if nightly:
-            print("Fetching origin/main...")
-            ok, err = sup.git_fetch_branch(app_root, "main")
-            if not ok:
-                print(f"Fetch failed: {err}")
-                sys.exit(1)
-            rc, sha, _ = sup._git(app_root, ["rev-parse", "--short", "origin/main"])
-            current = sup.get_current_release(app_root)
-            print(f"Current      : {current or '(none — flat repo mode)'}")
-            print(f"origin/main  : {sha if rc == 0 else 'unknown'}")
-            return
-        print("Fetching tags...")
-        sup.git_fetch_tags(app_root)
-        current = sup.get_current_release(app_root)
-        latest = sup.get_latest_tag(app_root)
-        print(f"Current : {current or '(none — flat repo mode)'}")
-        print(f"Latest  : {latest or '(no tags found)'}")
-        if latest and latest != current:
-            print(f"Update available: {current} -> {latest}")
-        elif latest:
+        print("Fetching origin...")
+        rc, _, err = _git(["fetch", "origin"])
+        if rc != 0:
+            print(f"Git fetch failed: {err}")
+            sys.exit(1)
+
+        rc, current_sha, _ = _git(["rev-parse", "--short", "HEAD"])
+        current = current_sha if rc == 0 else "unknown"
+
+        rc, remote_sha, _ = _git(["rev-parse", "--short", "origin/main"])
+        remote = remote_sha if rc == 0 else "unknown"
+
+        print(f"Current     : {current}")
+        print(f"origin/main : {remote}")
+
+        if current != remote and remote != "unknown":
+            print(f"Update available: {current} -> {remote}")
+        elif remote != "unknown":
             print("Already up to date.")
         return
 
-    if nightly:
-        # Nightly: always run inline (no supervisor signal)
-        print("Fetching origin/main (nightly)...")
-        ok, err = sup.git_fetch_branch(app_root, "main")
-        if not ok:
-            print(f"Fetch failed: {err}")
-            sys.exit(1)
-        rc, sha, _ = sup._git(app_root, ["rev-parse", "--short", "origin/main"])
-        print(f"Updating to nightly (origin/main @ {sha if rc == 0 else 'unknown'})...")
-        ok = sup.run_update("main", cfg, None, skip_verify=True, nightly=True)
-        sys.exit(0 if ok else 1)
-
-    # Signal running supervisor for immediate check
-    if not sup.is_windows():
-        spid = _get_supervisor_pid()
-        if spid and _is_running(spid):
-            try:
-                os.kill(spid, signal.SIGUSR1)
-                print(f"Sent update trigger to supervisor (PID {spid})")
-                return
-            except OSError:
-                pass
-
-    # Supervisor not running — run update inline
-    print("Supervisor not running. Running update inline...")
-    sup.git_fetch_tags(app_root)
-    target = tag or sup.get_latest_tag(app_root)
-    if not target:
-        print("No tags found — nothing to update.")
+    # Apply update: fetch origin/main and reset to it
+    print("Fetching origin/main...")
+    rc, _, err = _git(["fetch", "origin", "main"])
+    if rc != 0:
+        print(f"Git fetch failed: {err}")
         sys.exit(1)
 
-    current = sup.get_current_release(app_root)
-    if target == current and not force:
-        print(f"Already at {target}.")
-        return
+    rc, remote_sha, _ = _git(["rev-parse", "--short", "origin/main"])
+    display_sha = remote_sha if rc == 0 else "unknown"
 
-    print(f"Updating to {target}...")
-    ok = sup.run_update(target, cfg, None, skip_verify=force)
-    sys.exit(0 if ok else 1)
+    print(f"Resetting to origin/main ({display_sha})...")
+    rc, _, err = _git(["reset", "--hard", "origin/main"])
+    if rc != 0:
+        print(f"Git reset failed: {err}")
+        sys.exit(1)
+
+    print("Update complete.")
 
 
 # ═══════════════════════════════════════════════════════════════════
