@@ -36,12 +36,11 @@ func (e *Executor) handleExecPython(req Request) Response {
 	cmd.Dir = cwd
 	cmd.Stdin = bytes.NewBufferString(p.Code)
 
-	var envPairs []string
+	// Build environment: start with the login-shell environment
+	// (captured once at startup), then layer RPC-supplied vars on top.
+	cmd.Env = e.getEnviron()
 	for k, v := range p.Env {
-		envPairs = append(envPairs, k+"="+v)
-	}
-	if len(envPairs) > 0 {
-		cmd.Env = append(cmd.Environ(), envPairs...)
+		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 
 	var stdout, stderr bytes.Buffer

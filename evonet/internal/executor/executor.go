@@ -2,10 +2,12 @@
 package executor
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -47,6 +49,12 @@ type Executor struct {
 
 	mu    sync.Mutex
 	cache map[string]*inflight // req.ID → in-flight/completed result
+
+	// Cached login-shell environment captured once at startup.
+	// On macOS this recovers PATH, custom env vars, and toolchain
+	// directories that GUI-launched processes don't normally inherit.
+	loginEnv     []string
+	loginEnvOnce sync.Once
 }
 
 func New(workDir string, verbose bool) *Executor {
@@ -59,6 +67,42 @@ func New(workDir string, verbose bool) *Executor {
 		clean += string(os.PathSeparator)
 	}
 	return &Executor{workDir: clean, verbose: verbose, cache: make(map[string]*inflight)}
+}
+
+// getEnviron returns the cached login-shell environment if available,
+// falling back to the process environment. RPC-supplied env vars are
+// merged on top by the callers (handleExecBash / handleExecPython).
+func (e *Executor) getEnviron() []string {
+	e.loginEnvOnce.Do(func() {
+		e.loginEnv = captureLoginEnv()
+	})
+	if e.loginEnv != nil {
+		return e.loginEnv
+	}
+	return os.Environ()
+}
+
+// captureLoginEnv runs "bash -l -c env" to recover the full login-shell
+// environment (PATH, toolchain dirs, custom vars). Returns nil on failure
+// so callers gracefully fall back to the process environment.
+func captureLoginEnv() []string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bash", "-l", "-c", "env")
+	out, err := cmd.Output()
+	if err != nil {
+		log.Printf("[evonet] login env capture failed (shell env will be process env): %v", err)
+		return nil
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	// Filter out empty lines (just in case).
+	filtered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.Contains(line, "=") {
+			filtered = append(filtered, line)
+		}
+	}
+	return filtered
 }
 
 // Handle processes a Request and returns a Response.
