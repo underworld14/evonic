@@ -233,7 +233,7 @@ def api_reset():
         }), 400
 
 
-@evaluation_bp.route('/api/test_matrix')
+@evaluation_bp.route('/api/evaluator/test_matrix')
 def api_test_matrix():
     """Get test matrix for current run"""
     run_id = request.args.get('run_id', type=int)
@@ -375,7 +375,7 @@ def api_summary(run_id):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-@evaluation_bp.route('/api/log_poll')
+@evaluation_bp.route('/api/evaluator/log_poll')
 def log_poll():
     """Poll for new log messages - returns batch of pending messages"""
     messages = []

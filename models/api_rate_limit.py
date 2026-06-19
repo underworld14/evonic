@@ -9,7 +9,7 @@ Tiers
 -----
 - chat:    10 req/min  — /api/agents/<id>/chat/*
 - upload:   5 req/min  — POST /api/agents/<id>/artifacts, /avatar, /kb; /api/plugins
-- crud:    30 req/min  — /api/agents* (excluding chat/upload sub-paths)
+- crud:   120 req/min  — /api/agents* (excluding chat/upload sub-paths)
 - general: 60 req/min  — all other /api/* endpoints
 - static: 300 req/min  — /static/* (or unlimited, configurable)
 - sse:     max 5 concurrent connections per user/IP
@@ -47,7 +47,7 @@ TIERS = {
     "chat":    (10,  60),   # 10 req/min — actual LLM message sends only
     "poll":    (120, 60),   # 120 req/min — cheap chat reads / 1s SSE-fallback poll
     "upload":  (5,   60),   #  5 req/min
-    "crud":    (30,  60),   # 30 req/min
+    "crud":    (120, 60),   # 120 req/min
     "general": (60,  60),   # 60 req/min
     "static":  (300, 60),   # 300 req/min (effectively unlimited for normal use)
 }
@@ -141,6 +141,11 @@ def classify_request(path: str, method: str = "GET") -> str:
     """Return the rate-limit tier for a given request path and method.
 
     Classification rules (first match wins):
+      0. GET /api/evaluator/log_poll, /api/evaluator/test_matrix,
+         /api/v1/history/*, /api/dashboard*,
+         /api/models*, /api/config*, /api/system* → None (exempt reads;
+         high-frequency evaluator polling / dashboard / config reads). Non-GET
+         (mutations) fall through to normal classification below.
       1. /static/*                     → static
       2. POST /api/agents/<id>/chat and /chat/approve → chat (LLM sends)
       2b. any other /api/agents/<id>/chat* (GET reads, polls, stream) → poll
@@ -148,13 +153,30 @@ def classify_request(path: str, method: str = "GET") -> str:
       4. POST /api/agents/<id>/avatar    → upload
       5. POST /api/agents/<id>/kb        → upload
       6. /api/plugins*                   → upload
-      7. /api/agents*                    → crud
-      8. /api/*                          → general
-      9. everything else                 → None (no limit)
+      7. GET /api/agents/<id>/avatar     → static (image serving, not CRUD)
+      8. GET /api/agents/<id>/artifacts/* → static (file serving, not CRUD)
+      9. /api/agents*                    → crud
+      10. /api/*                         → general
+      11. everything else                → None (no limit)
     """
     # Static assets
     if path.startswith("/static/"):
         return "static"
+
+    # High-frequency evaluator polling / dashboard endpoints — exempt READS only
+    # from rate limiting. The evaluator hammers these progress/history/config
+    # reads far faster than the "general" tier (60 req/min) allows, so GET is
+    # cap-free. Mutations (POST/PUT/DELETE) fall through to normal limiting.
+    if method == "GET" and (
+        path.startswith("/api/evaluator/log_poll")
+        or path.startswith("/api/evaluator/test_matrix")
+        or path.startswith("/api/v1/history/")
+        or path.startswith("/api/dashboard")
+        or path.startswith("/api/models")
+        or path.startswith("/api/config")
+        or path.startswith("/api/system")
+    ):
+        return None
 
     # Chat endpoints. Only the expensive LLM-send POSTs consume the small "chat"
     # budget; cheap GET reads/polls (history, poll, state, session, summary,
@@ -179,6 +201,15 @@ def classify_request(path: str, method: str = "GET") -> str:
                 return "upload"
         if path.startswith("/api/plugins"):
             return "upload"
+
+    # Static asset serving (avatar images, artifact files) — GET only.
+    # These serve static binary content (images, etc.) and should not
+    # consume the CRUD budget alongside agent list/create/edit operations.
+    if method == "GET":
+        if "/api/agents/" in path and "/avatar" in path:
+            return "static"
+        if "/api/agents/" in path and "/artifacts/" in path:
+            return "static"
 
     # Agent CRUD
     if path.startswith("/api/agents"):

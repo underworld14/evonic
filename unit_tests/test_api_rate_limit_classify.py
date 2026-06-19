@@ -43,9 +43,57 @@ class TestClassifyRequest(unittest.TestCase):
         self.assertEqual(classify_request(f"{self.AID}", "GET"), "crud")
         self.assertEqual(classify_request("/api/settings", "GET"), "general")
 
+    def test_evaluator_polling_reads_are_exempt(self):
+        # High-frequency evaluator GET polls must not be rate-limited at all.
+        self.assertIsNone(classify_request("/api/evaluator/log_poll", "GET"))
+        self.assertIsNone(classify_request("/api/evaluator/test_matrix", "GET"))
+        self.assertIsNone(classify_request("/api/evaluator/test_matrix?run_id=3", "GET"))
+        self.assertIsNone(classify_request("/api/v1/history/last/id", "GET"))
+        self.assertIsNone(classify_request("/api/v1/history/5/math/1", "GET"))
+        self.assertIsNone(classify_request("/api/dashboard/data", "GET"))
+        self.assertIsNone(classify_request("/api/models", "GET"))
+        self.assertIsNone(classify_request("/api/config", "GET"))
+        self.assertIsNone(classify_request("/api/system/update/status", "GET"))
+
+    def test_mutations_on_exempt_prefixes_still_limited(self):
+        # Only GET reads are exempt — mutations stay rate-limited.
+        self.assertEqual(classify_request("/api/models", "POST"), "general")
+        self.assertEqual(classify_request("/api/models/m1", "PUT"), "general")
+        self.assertEqual(classify_request("/api/models/m1", "DELETE"), "general")
+        self.assertEqual(classify_request("/api/config/model", "POST"), "general")
+        self.assertEqual(
+            classify_request("/api/system/update/start", "POST"), "general"
+        )
+
     def test_static_and_non_api_unchanged(self):
         self.assertEqual(classify_request("/static/js/app.js", "GET"), "static")
         self.assertIsNone(classify_request("/login", "POST"))
+
+    def test_get_avatar_is_static_not_crud(self):
+        # GET avatar serves an image file — should NOT consume the CRUD budget
+        self.assertEqual(classify_request(f"{self.AID}/avatar", "GET"), "static")
+        self.assertEqual(classify_request(f"{self.AID}/avatar?size=small", "GET"), "static")
+
+    def test_get_artifacts_file_is_static_not_crud(self):
+        # GET artifacts/<file> serves a static file — should NOT consume CRUD budget
+        self.assertEqual(
+            classify_request(f"{self.AID}/artifacts/screenshot.png", "GET"), "static"
+        )
+        self.assertEqual(
+            classify_request(f"{self.AID}/artifacts/report.pdf", "GET"), "static"
+        )
+
+    def test_post_avatar_still_upload(self):
+        # POST avatar is still an upload (unchanged behavior)
+        self.assertEqual(classify_request(f"{self.AID}/avatar", "POST"), "upload")
+
+    def test_post_artifacts_still_upload(self):
+        # POST artifacts is still an upload (unchanged behavior)
+        self.assertEqual(classify_request(f"{self.AID}/artifacts", "POST"), "upload")
+
+    def test_upload_kb_still_upload(self):
+        # POST kb is still an upload (unchanged behavior)
+        self.assertEqual(classify_request(f"{self.AID}/kb", "POST"), "upload")
 
 
 if __name__ == "__main__":
