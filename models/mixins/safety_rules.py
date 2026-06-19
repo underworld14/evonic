@@ -16,12 +16,12 @@ class SafetyRuleMixin:
             # Two explicit branches avoids dynamic f-string for query-plan caching.
             if enabled_only:
                 cursor.execute(
-                    "SELECT * FROM safety_rules WHERE enabled = 1 "
+                    "SELECT id, name, description, pattern, pattern_type, weight, category, tool_scope, scope, enabled, is_system, created_at, updated_at FROM safety_rules WHERE enabled = 1 "
                     "ORDER BY is_system DESC, weight DESC, name"
                 )
             else:
                 cursor.execute(
-                    "SELECT * FROM safety_rules ORDER BY is_system DESC, weight DESC, name"
+                    "SELECT id, name, description, pattern, pattern_type, weight, category, tool_scope, scope, enabled, is_system, created_at, updated_at FROM safety_rules ORDER BY is_system DESC, weight DESC, name"
                 )
             return [dict(row) for row in cursor.fetchall()]
 
@@ -59,7 +59,7 @@ class SafetyRuleMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM safety_rules WHERE id = ?", (rule_id,))
+            cursor.execute("SELECT id, name, description, pattern, pattern_type, weight, category, tool_scope, scope, enabled, is_system, created_at, updated_at FROM safety_rules WHERE id = ?", (rule_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
 
