@@ -10,7 +10,7 @@ Tiers
 - chat:    10 req/min  — /api/agents/<id>/chat/*
 - upload:   5 req/min  — POST /api/agents/<id>/artifacts, /avatar, /kb; /api/plugins
 - crud:   120 req/min  — /api/agents* (excluding chat/upload sub-paths)
-- general: 60 req/min  — all other /api/* endpoints
+- general: 300 req/min — all other /api/* endpoints
 - static: 300 req/min  — /static/* (or unlimited, configurable)
 - sse:     max 5 concurrent connections per user/IP
 
@@ -48,7 +48,7 @@ TIERS = {
     "poll":    (120, 60),   # 120 req/min — cheap chat reads / 1s SSE-fallback poll
     "upload":  (5,   60),   #  5 req/min
     "crud":    (120, 60),   # 120 req/min
-    "general": (60,  60),   # 60 req/min
+    "general": (300, 60),   # 300 req/min
     "static":  (300, 60),   # 300 req/min (effectively unlimited for normal use)
 }
 

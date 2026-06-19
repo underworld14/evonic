@@ -244,47 +244,111 @@ document.addEventListener('evonic:approval-resolved', function(e) {
     }
 });
 
-// Global realtime listener: subscribe to the shared RealtimeClient instance.
+// Global realtime listener: subscribe via RealtimeClient to the unified stream.
 // This receives approval events (any agent, any session) via the 'approvals' channel.
-// Visibility pause/resume and page-unload cleanup are handled by the shared instance.
 (function() {
-    if (typeof getSharedRealtime === 'undefined') {
-        // Fallback: old EventSource if RealtimeClient not loaded
-        var _sse = null;
-        function _connectOld() {
-            if (_sse) return;
-            try { _sse = new EventSource('/api/approvals/stream'); } catch (e) { return; }
-            _sse.addEventListener('approval_required', function(e) {
-                var data = JSON.parse(e.data);
-                if (!data.approval_id) return;
-                _currentData = data;
-                populateModal(data);
-                openModal();
+    var _sse = null;
+    var _reconnectTimer = null;
+    var _enabled = false;
+    var _realtimeHandlersBound = false;
+
+    function _connectSSE() {
+        if (!_enabled) return;
+        if (_sse) return;
+
+        // Use RealtimeClient if available
+        if (typeof RealtimeClient !== 'undefined') {
+            var rt = window._evApprovalRT = window._evApprovalRT || new RealtimeClient({
+                channels: 'approvals'
             });
-            _sse.addEventListener('approval_resolved', function(e) {
-                var data = JSON.parse(e.data);
-                if (_currentData && data.approval_id === _currentData.approval_id) {
-                    closeModal();
-                }
-            });
-            _sse.onerror = function() { _sse.close(); _sse = null; setTimeout(_connectOld, 3000); };
+            if (!_realtimeHandlersBound) {
+                rt.on('approvals', 'approval_required', function(data) {
+                    if (!data.approval_id) return;
+                    _currentData = data;
+                    populateModal(data);
+                    openModal();
+                });
+                rt.on('approvals', 'approval_resolved', function(data) {
+                    if (_currentData && data.approval_id === _currentData.approval_id) {
+                        closeModal();
+                    }
+                });
+                _realtimeHandlersBound = true;
+            }
+            rt.start();
+            _sse = { close: function() { rt.stop(); } };
+            return;
         }
-        _connectOld();
-        return;
+
+        // Fallback: old EventSource
+        var es;
+        try {
+            es = new EventSource('/api/approvals/stream');
+            _sse = es;
+        } catch (e) {
+            return;
+        }
+
+        es.addEventListener('approval_required', function(e) {
+            var data = JSON.parse(e.data);
+            if (!data.approval_id) return;
+            _currentData = data;
+            populateModal(data);
+            openModal();
+        });
+
+        es.addEventListener('approval_resolved', function(e) {
+            var data = JSON.parse(e.data);
+            if (_currentData && data.approval_id === _currentData.approval_id) {
+                closeModal();
+            }
+        });
+
+        es.onerror = function() {
+            es.close();
+            if (_sse === es) _sse = null;
+            if (!_enabled) return;
+            if (_reconnectTimer) clearTimeout(_reconnectTimer);
+            // Reconnect after a short delay
+            _reconnectTimer = setTimeout(function() {
+                _reconnectTimer = null;
+                _connectSSE();
+            }, 3000);
+        };
     }
 
-    // Use shared RealtimeClient — no separate connection needed.
-    var rt = getSharedRealtime();
-    rt.on('approvals', 'approval_required', function(data) {
-        if (!data.approval_id) return;
-        _currentData = data;
-        populateModal(data);
-        openModal();
-    });
-    rt.on('approvals', 'approval_resolved', function(data) {
-        if (_currentData && data.approval_id === _currentData.approval_id) {
-            closeModal();
+    function _startSSE() {
+        _enabled = true;
+        if (_sse) return;
+        _connectSSE();
+    }
+
+    function _closeSSE() {
+        _enabled = false;
+        if (_reconnectTimer) {
+            clearTimeout(_reconnectTimer);
+            _reconnectTimer = null;
+        }
+        if (!_sse) return;
+        try {
+            _sse.close();
+        } catch (e) {}
+        _sse = null;
+    }
+
+    // Start SSE when the page loads and when it becomes visible
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', _startSSE);
+    } else {
+        _startSSE();
+    }
+    document.addEventListener('visibilitychange', function() {
+        if (document.visibilityState === 'visible') {
+            _startSSE();
         }
     });
+    window.addEventListener('pagehide', _closeSSE);
+    window.addEventListener('beforeunload', _closeSSE);
+    window.addEventListener('pageshow', _startSSE);
 })();
 })();
