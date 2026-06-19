@@ -921,8 +921,17 @@ class EvaluationEngine:
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 return {"error": "Python mock: import statements are not allowed"}
             # Block class/function definitions
-            if isinstance(node, (ast.ClassDef, ast.AsyncFunctionDef)):
-                return {"error": "Python mock: class/async def not allowed"}
+            if isinstance(node, (ast.ClassDef, ast.AsyncFunctionDef, ast.FunctionDef)):
+                return {"error": "Python mock: class/function definitions not allowed"}
+            # Block global/nonlocal declarations (could poison namespace)
+            if isinstance(node, (ast.Global, ast.Nonlocal)):
+                return {"error": "Python mock: global/nonlocal declarations not allowed"}
+            # Block delete statements
+            if isinstance(node, ast.Delete):
+                return {"error": "Python mock: delete statements not allowed"}
+            # Block raise statements (can probe environment)
+            if isinstance(node, ast.Raise):
+                return {"error": "Python mock: raise statements not allowed"}
             # Block dunder attribute access (e.g. x.__class__.__bases__)
             if isinstance(node, ast.Attribute) and node.attr in _DUNDER_DENIES:
                 return {"error": f"Python mock: access to '{node.attr}' is not allowed"}
