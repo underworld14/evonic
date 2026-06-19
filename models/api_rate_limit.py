@@ -141,7 +141,8 @@ def classify_request(path: str, method: str = "GET") -> str:
     """Return the rate-limit tier for a given request path and method.
 
     Classification rules (first match wins):
-      0. GET /api/log_poll, /api/test_matrix, /api/v1/history/*, /api/dashboard*,
+      0. GET /api/evaluator/log_poll, /api/evaluator/test_matrix,
+         /api/v1/history/*, /api/dashboard*,
          /api/models*, /api/config*, /api/system* → None (exempt reads;
          high-frequency evaluator polling / dashboard / config reads). Non-GET
          (mutations) fall through to normal classification below.
@@ -167,8 +168,8 @@ def classify_request(path: str, method: str = "GET") -> str:
     # reads far faster than the "general" tier (60 req/min) allows, so GET is
     # cap-free. Mutations (POST/PUT/DELETE) fall through to normal limiting.
     if method == "GET" and (
-        path.startswith("/api/log_poll")
-        or path.startswith("/api/test_matrix")
+        path.startswith("/api/evaluator/log_poll")
+        or path.startswith("/api/evaluator/test_matrix")
         or path.startswith("/api/v1/history/")
         or path.startswith("/api/dashboard")
         or path.startswith("/api/models")

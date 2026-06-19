@@ -45,9 +45,9 @@ class TestClassifyRequest(unittest.TestCase):
 
     def test_evaluator_polling_reads_are_exempt(self):
         # High-frequency evaluator GET polls must not be rate-limited at all.
-        self.assertIsNone(classify_request("/api/log_poll", "GET"))
-        self.assertIsNone(classify_request("/api/test_matrix", "GET"))
-        self.assertIsNone(classify_request("/api/test_matrix?run_id=3", "GET"))
+        self.assertIsNone(classify_request("/api/evaluator/log_poll", "GET"))
+        self.assertIsNone(classify_request("/api/evaluator/test_matrix", "GET"))
+        self.assertIsNone(classify_request("/api/evaluator/test_matrix?run_id=3", "GET"))
         self.assertIsNone(classify_request("/api/v1/history/last/id", "GET"))
         self.assertIsNone(classify_request("/api/v1/history/5/math/1", "GET"))
         self.assertIsNone(classify_request("/api/dashboard/data", "GET"))

@@ -898,7 +898,7 @@ function startPolling() {
 }
 
 function updateStatus() {
-    fetch('/api/test_matrix')
+    fetch('/api/evaluator/test_matrix')
     .then(response => response.json())
     .then(data => {
         updateMatrix(data.domains);
@@ -1110,7 +1110,7 @@ function setupLogStream() {
 
     // Poll for new log messages every 500ms
     logPollInterval = setInterval(() => {
-        fetch('/api/log_poll')
+        fetch('/api/evaluator/log_poll')
         .then(response => response.json())
         .then(data => {
             if (data.messages && data.messages.length > 0) {

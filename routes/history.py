@@ -153,7 +153,7 @@ def api_update_run_summary(run_id):
 
 @history_bp.route('/api/run/<int:run_id>/matrix')
 def api_run_matrix(run_id):
-    """Get test matrix for a specific run (same format as /api/test_matrix)"""
+    """Get test matrix for a specific run (same format as /api/evaluator/test_matrix)"""
     test_results = db.get_test_results(run_id)
     run_info = db.get_evaluation_run(run_id)
     model_name = run_info.get("model_name") if run_info else None
