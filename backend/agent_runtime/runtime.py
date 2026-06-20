@@ -1837,6 +1837,11 @@ class AgentRuntime:
                 if 'fetch_artifact' not in assigned_tool_ids:
                     assigned_tool_ids.append('fetch_artifact')
 
+            # Auto-assign send_file to all agents so they can send files via channels.
+            # No DB assignment needed — every agent can send file attachments.
+            if 'send_file' not in assigned_tool_ids:
+                assigned_tool_ids.append('send_file')
+
             # Agents with vision_enabled automatically get describe_image.
             # No DB assignment needed — every vision-capable agent can analyze images.
             if agent.get('vision_enabled', 1) and 'describe_image' not in assigned_tool_ids:
