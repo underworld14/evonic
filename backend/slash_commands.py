@@ -198,7 +198,7 @@ def _register_builtins():
                 pass
         lines = ["**Available commands:**"]
         super_only = {"restart", "cd", "cwd", "shutdown"}
-        web_only = {"investigate"}  # only shown/available on web, not channels
+        web_only = set()  # all commands now available on both web and channels
         # /sub requires the subagent skill
         has_subagent = False
         try:
@@ -260,10 +260,6 @@ def _register_builtins():
         channel_id: Optional[str],
         args: str,
     ) -> str:
-        # Web-only: reject on channels
-        if channel_id is not None:
-            return "This command is only available on the web interface."
-
         from models.db import db
 
         # Parse target agent-id and context
