@@ -95,6 +95,10 @@ class TurnPrefetcher:
             # Rebuild agent context
             assigned_tool_ids = db.get_agent_tools(db_agent_id)
 
+            # Check whether describe_image is assigned — passed through to
+            # build_message_entry so the hint is only injected when available.
+            has_describe_image = 'describe_image' in assigned_tool_ids
+
             # Agents with save_artifact automatically get list_artifacts + fetch_artifact.
             # No DB assignment needed — every artifacts-enabled agent can search and fetch their files.
             if 'save_artifact' in assigned_tool_ids:
@@ -174,13 +178,13 @@ class TurnPrefetcher:
                         tail_start += 1
                     for msg in raw_tail[tail_start:]:
                         fresh_messages.append(
-                            _ctx.build_message_entry(msg, agent))
+                            _ctx.build_message_entry(msg, agent, has_describe_image))
                 else:
                     history = db.get_session_messages(
                         session_id, limit=50, agent_id=db_agent_id)
                     for msg in history:
                         fresh_messages.append(
-                            _ctx.build_message_entry(msg, agent))
+                            _ctx.build_message_entry(msg, agent, has_describe_image))
 
             # Ensure messages don't end with assistant role
             while (len(fresh_messages) > 1
